@@ -71,13 +71,15 @@ class Approvers(object):
 class State(object):
 
   def __init__(self, name, sha=None, approvers=Approvers(), opener=None,
-               dryRun=False, haveApproved=[]):
-    self.name         = name
-    self.sha          = sha
-    self.approvers    = approvers
-    self.opener       = opener
-    self.dryRun       = dryRun
-    self.haveApproved = haveApproved
+               dryRun=False, haveApproved=[], haveApproved_p2=[]):
+    self.name                = name
+    self.sha                 = sha
+    self.approvers           = approvers
+    self.opener              = opener
+    self.dryRun              = dryRun
+    self.haveApproved        = haveApproved
+    self.haveApproved_p2     = haveApproved_p2
+    self.approvers_unchanged = Approvers.from_str(str(approvers), approvers.users_override)
     if name == "STATE_INITIAL":
       self.action = self.action_check_permissions
     elif name == "STATE_APPROVAL_REQUIRED":
@@ -88,12 +90,14 @@ class State(object):
       self.action = self.action_tests_only
     elif name == "STATE_TESTS_AUTOMERGE":
       self.action = self.action_tests_automerge
+    elif name == "STATE_MERGE_APPROVAL_PENDING":
+      self.action = self.action_approval2_pending
     else:
       raise RuntimeError("unknown state %s" % self.name)
 
   def __str__(self):
-    return "%s: sha: %s, approvers: %s, opener: %s, have approved: %s" % \
-           (self.name, self.sha, self.approvers, self.opener, self.haveApproved)
+    return "%s: sha: %s, approvers: %s, opener: %s, have approved: %s, have approved (2): %s" % \
+           (self.name, self.sha, self.approvers, self.opener, self.haveApproved, self.haveApproved_p2)
 
   def action_check_permissions(self, pull, perms, tests):
     for fn in pull.get_files():
@@ -105,6 +109,8 @@ class State(object):
           self.approvers.push(num_approve, approve)
           break
       assert approve, "this should not happen: for file %s no rule matches" % fn.filename
+    debug("computed list of approvers: %s (override: %s)" % (self.approvers, self.approvers.users_override))
+    self.approvers_unchanged = Approvers.from_str(str(self.approvers), users_override=self.approvers.users_override)
     self.action_approval_required(pull, perms, tests)
 
   def action_approval_required(self, pull, perms, tests):
@@ -116,8 +122,8 @@ class State(object):
   def request_approval(self, pull):
     setStatus(pull, self.sha, "review", "pending", "pending approval")
     commentOnPr(pull, "%s: approval required: %s\n\n" \
-                      "Comment with `+1` to approve and allow automatic merging," \
-                      "or with `+test` to run tests only" % (self.sha, self.approvers))
+                      "_Comment with `+1` to approve and allow automatic merging," \
+                      "or with `+test` to run tests only._" % (self.sha, self.approvers))
 
   def action_approval_pending(self, pull, perms, tests):
     approveTestsOnly = False
@@ -132,8 +138,11 @@ class State(object):
       for t in tests:
         setStatus(pull, self.sha, t, "pending", "test required")
     if self.approvers() == True and approveTestsOnly:
-      info("%s: only tests approved, no auto merge on test success" % self.sha)
-      commentOnPr(pull, "%s: tests approved: will not be automatically merged; starting tests" % self.sha)
+      info("%s: only testing approved, no auto merge on test success" % self.sha)
+      commentOnPr(pull, "%s: testing approved: " \
+                        "will not be automatically merged; starting testing. " \
+                        "If testing succeeds, merging will require further approval from %s" % \
+                        (self.sha, str(self.approvers_unchanged)))
     elif self.approvers() == True:
       info("%s: changes approved, auto merge on test success" % self.sha)
       commentOnPr(pull, "%s: approved: will be automatically merged on successful tests" % self.sha)
@@ -143,11 +152,47 @@ class State(object):
     else:
       info("%s: list of approvers unchanged, nothing to say" % self.sha)
 
+  def action_approval2_pending(self, pull, perms, tests):
+    hasChanged = False
+    for u in self.haveApproved_p2:
+      if self.approvers.approve(u["u"]):
+        hasChanged = True
+    if self.approvers() == True:
+      info("%s: merge approved, merging now" % self.sha)
+      prMerge(pull)
+    elif hasChanged:
+      info("%s: list of merge approvers has changed to %s, notifying" % (self.sha, self.approvers))
+      self.request_approval(pull)
+    else:
+      info("%s: list of merge approvers unchanged, nothing to say" % self.sha)
+
   def action_tests_only(self, pull, perms, tests):
+    ok = False
+    for x in tests:
+      s = getStatus(pull, self.sha, x)[0]
+      debug("%s: required test %s is %s" % (self.sha, x, s))
+      ok = (s == "success")
+      if not ok:
+        break
+    if ok:
+      info("%s: all tests passed, requesting approval from %s" % (self.sha, self.approvers))
+      commentOnPr(pull, "%s: tests OK, approval required for merging: %s\n\n" \
+                        "_Comment with `+1` to merge._" % \
+                        (self.sha, str(self.approvers)))
     info("%s: tests are currently in progress, will not auto merge on success" % self.sha)
 
   def action_tests_automerge(self, pull, perms, tests):
-    info("%s: tests are currently in progress, will auto merge on success" % self.sha)
+    ok = False
+    for x in tests:
+      s = getStatus(pull, self.sha, x)[0]
+      debug("%s: required test %s is %s" % (self.sha, x, s))
+      ok = (s == "success")
+      if not ok:
+        break
+    if ok:
+      prMerge(pull)
+    else:
+      info("%s: tests are currently in progress, will auto merge on success" % self.sha)
 
 class Transition(object):
 
@@ -184,8 +229,10 @@ class Transition(object):
                         approvers=state.approvers,
                         opener=state.opener,
                         dryRun=state.dryRun,
-                        haveApproved=state.haveApproved)
-      new_state.haveApproved.append({"u":opener,"what":"test" if named_matches["approval"] == "test" else "merge"})
+                        haveApproved=state.haveApproved,
+                        haveApproved_p2=state.haveApproved_p2)
+      ha = new_state.haveApproved_p2 if state.name == "STATE_MERGE_APPROVAL_PENDING" else new_state.haveApproved
+      ha.append({"u":opener,"what":"test" if named_matches["approval"] == "test" else "merge"})
       debug("evolve: list of approvers updated: %s" % new_state.haveApproved)
     elif not opener in allowed_openers:
       debug("evolve: opener %s unallowed to move to state %s" % (opener, self.final_state))
@@ -200,8 +247,8 @@ class Transition(object):
                         approvers=app,
                         opener=opener,
                         dryRun=state.dryRun,
-                        haveApproved=state.haveApproved)
-      debug("evolve: can evolve to %s" % self.final_state)
+                        haveApproved=state.haveApproved,
+                        haveApproved_p2=state.haveApproved_p2)
     else:
       debug("evolve: approved")
       new_state = State(name=self.final_state,
@@ -209,23 +256,27 @@ class Transition(object):
                         approvers=state.approvers,
                         opener=opener,
                         dryRun=state.dryRun,
-                        haveApproved=state.haveApproved)
+                        haveApproved=state.haveApproved,
+                        haveApproved_p2=state.haveApproved_p2)
 
     return new_state
 
 TRANSITIONS = [
   Transition("\+(?P<approval>1|test)",
              None,
-             ["STATE_INITIAL", "STATE_APPROVAL_REQUIRED", "STATE_APPROVAL_PENDING"]),
+             ["STATE_INITIAL", "STATE_APPROVAL_REQUIRED", "STATE_APPROVAL_PENDING", "STATE_MERGE_APPROVAL_PENDING"]),
   Transition("^(?P<sha>[a-fA-F0-9]+): approval required[^:]*: (?P<approvers>.*)",
              "STATE_APPROVAL_PENDING",
              ["STATE_INITIAL", "STATE_APPROVAL_PENDING"]),
-  Transition("^(?P<sha>[a-fA-F0-9]+): tests approved",
+  Transition("^(?P<sha>[a-fA-F0-9]+): testing approved.*further approval from (?P<approvers>.*)",
              "STATE_TESTS_ONLY",
              ["STATE_INITIAL", "STATE_APPROVAL_PENDING"]),
   Transition("^(?P<sha>[a-fA-F0-9]+): approved",
              "STATE_TESTS_AUTOMERGE",
-             ["STATE_INITIAL", "STATE_APPROVAL_PENDING"])
+             ["STATE_INITIAL", "STATE_APPROVAL_PENDING"]),
+  Transition("^(?P<sha>[a-fA-F0-9]+): tests OK, approval required[^:]*: (?P<approvers>.*)",
+             "STATE_MERGE_APPROVAL_PENDING",
+             ["STATE_TESTS_ONLY"])
 ]
 
 class Perms(object):
@@ -391,6 +442,14 @@ def pull_state_machine(pull, repo, perms, tests, bot_user, admins, dryRun):
   info("Final state is %s: executing action" % state)
   state.action(pull, perms, tests)
 
+def getStatus(pull, sha, context):
+  commit = pull.base.repo.get_commit(sha)
+  for s in commit.get_statuses():
+    if s.context == context:
+      return s.state,s.description
+    break  # first (most recent) only
+  debug("Could not get state for %s" % sha)
+  return None,None
 
 if __name__ == "__main__":
   parser = ArgumentParser()
@@ -434,6 +493,7 @@ if __name__ == "__main__":
     commentOnPr = lambda pr, comment: info("dry run; would comment the following: %s" % (comment))
     setStatus = lambda pull, sha, context, state, message: \
                   info("dry run; would set for context %s state %s, message %s for %s" % (context, state, message, sha))
+    prMerge = lambda pull: info("dry run; would have merged this pull request")
   else:
     def commentOnPr(pr, comment):
       info("commenting: %s" % comment)
@@ -449,6 +509,9 @@ if __name__ == "__main__":
       if add_state:
         info("setting state %s (%s) for %s" % (state, message, sha))
         commit.create_status(state, "", message, context)
+    def prMerge(pull):
+      info("merging pull request")
+      pull.merge()
 
   loggerHandler.setFormatter(logging.Formatter('%(levelname)s:%(name)s: %(message)s'))
   if args.debug: logger.setLevel(logging.DEBUG)
