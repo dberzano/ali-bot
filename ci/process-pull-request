@@ -525,6 +525,7 @@ if __name__ == "__main__":
 
   # Get all open pull requests from all configured repositories
   gh = None
+  gh_req_left,gh_req_limit = None,None
   repos = {}
   for repo in perms:
     if limit_pr and not repo in limit_pr:
@@ -534,6 +535,8 @@ if __name__ == "__main__":
     if not gh:
       try:
         gh = Github(login_or_token=open(expanduser("~/.github-token")).read().strip())
+        gh_req_left,gh_req_limit = gh.rate_limiting
+        info("GitHub API calls: %d calls left (%d calls allowed)" % (gh_req_left,gh_req_limit))
       except (IOError,GithubException) as e:
         error("GitHub API problem: %s" % e)
         break
@@ -548,4 +551,9 @@ if __name__ == "__main__":
                            args.bot_user, args.admins.split(","),
                            dryRun=args.dryRun)
     except GithubException as e:
-      error("cannot fetch repository %s: %s" % (repo, e))
+      error("problem working on repository %s: %s" % (repo, e))
+
+  if gh:
+    gh_req_left_2,gh_req_limit_2 = gh.rate_limiting
+    info("GitHub API calls: %d calls done, %d calls left (%d calls allowed)" % \
+         (gh_req_left-gh_req_left_2,gh_req_left_2,gh_req_limit_2))
