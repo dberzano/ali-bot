@@ -28,8 +28,11 @@ pushd conf
   git reset --hard origin/HEAD
   git clean -fxd
   pushd ci_conf
-    ../../../code/ci/sync-egroups.py > groups.yml || { rm groups.yml; git checkout groups.yml; }
-    git commit -a -m "CI e-groups updated" || true
+    # Errors in both operations are not fatal
+    ../../../code/ci/sync-egroups.py > groups.yml || { rm -f groups.yml; git checkout groups.yml; }
+    ../../../code/ci/sync-mapusers.py "$ALICE_GH_API" > mapusers.yml0 && mv -vf mapusers.yml0 mapusers.yml \
+                                                                      || rm -f mapusers.yml0
+    git commit -a -m "CI e-groups/users mapping updated" || true
     git push
   popd
 popd
