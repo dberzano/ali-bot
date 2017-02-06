@@ -1,6 +1,8 @@
 #!/bin/bash -xe
 set -o pipefail
 
+[[ -d $MESOS_SANDBOX ]] && cd "$MESOS_SANDBOX" || true
+
 # Setup GitLab credentials (to push new data)
 printf "protocol=https\nhost=gitlab.cern.ch\nusername=alibuild\npassword=$GITLAB_TOKEN\n" |
   git credential-store --file $PWD/git-creds store
@@ -14,6 +16,12 @@ CI_REPO=$CI_REPO # gh_user/gh_repo[:branch]
 CI_REPO_ONLY=${CI_REPO%:*}
 CI_BRANCH=${CI_REPO##*:}
 [[ -d code/.git ]] || git clone https://github.com/$CI_REPO_ONLY ${CI_BRANCH:+-b $CI_BRANCH} code/
+cp code/ci/runner.sh . && chmod +x runner.sh
+if [[ ! $ALREADY_RUN ]]; then
+  export ALREADY_RUN=1
+  mkdir -p log
+  exec ./runner.sh "$@" 2>&1 | tee log/pr-$(date --utc +%Y%m%d-%H%M%S).log
+fi
 
 # Clone configuration under "conf"
 [[ -d conf/.git ]] || { git clone https://gitlab.cern.ch/ALICEDevOps/ali-marathon.git conf/;
@@ -29,8 +37,8 @@ pushd conf
   git clean -fxd
   pushd ci_conf
     # Errors in both operations are not fatal
-    ../../../code/ci/sync-egroups.py > groups.yml || { rm -f groups.yml; git checkout groups.yml; }
-    ../../../code/ci/sync-mapusers.py "$ALICE_GH_API" > mapusers.yml0 && mv -vf mapusers.yml0 mapusers.yml \
+    ../../code/ci/sync-egroups.py > groups.yml || { rm -f groups.yml; git checkout groups.yml; }
+    ../../code/ci/sync-mapusers.py "$ALICE_GH_API" > mapusers.yml0 && mv -vf mapusers.yml0 mapusers.yml \
                                                                       || rm -f mapusers.yml0
     git commit -a -m "CI e-groups/users mapping updated" || true
     git push
@@ -45,11 +53,10 @@ pushd code
       ln -nfs $X .
     done
     ls -l
-    ./process-pull-request --admins $CI_ADMINS --bot-user alibuild --debug
+    ./process-pull-request --admins $CI_ADMINS --bot-user alibuild --debug ${DRY_RUN:+--dry-run}
   popd
 popd
 
-# Update self, sleep, relaunch
-cp code/ci/runner.sh . && chmod +x runner.sh
+find log/ -name 'pr-*.log' -type f -mtime +5 -delete || true
 sleep $SLEEP
-exec ./runner.sh "$@"
+exec ./runner.sh "$@" 2>&1 | tee log/pr-$(date --utc +%Y%m%d-%H%M%S).log
