@@ -28,7 +28,7 @@ for repo in perms:
   if repo == "groups": continue
   for rule in perms[repo].get("rules", []):
     for xrule in rule:
-      for g in rule[xrule].split():
+      for g in rule[xrule].replace(",", " ").replace("approve=", "").split():
         if g.startswith("@") and not g[1:] in def_groups:
           ldap_groups[g[1:]] = []
       break
