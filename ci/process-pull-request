@@ -262,7 +262,7 @@ class Transition(object):
     return new_state
 
 TRANSITIONS = [
-  Transition("\+(?P<approval>1|test)",
+  Transition("^\+(?P<approval>1|test)",
              None,
              ["STATE_INITIAL", "STATE_APPROVAL_REQUIRED", "STATE_APPROVAL_PENDING", "STATE_MERGE_APPROVAL_PENDING"]),
   Transition("^(?P<sha>[a-fA-F0-9]+): approval required[^:]*: (?P<approvers>.*)",
