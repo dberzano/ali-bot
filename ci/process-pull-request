@@ -20,7 +20,7 @@ class Approvers(object):
     match = re.findall("([0-9]+) of ([^;]+)?", s)
     a = Approvers(users_override=users_override)
     for m in match:
-      a.push(int(m[0]), map(lambda s: s.strip("@ "), str(m[1]).split(",")))
+      a.push(int(m[0]), map(Approvers.ghstrip, str(m[1]).split(",")))
     return a
   def approve(self, user):
     if user in self.users_override:
@@ -62,10 +62,22 @@ class Approvers(object):
     for x in self.approvers:
       f.update(x["u"])
     return f
+  def ghtagmap(self, u):
+    if u in self.usermap:
+      return "@%s (%s)" % (u, self.usermap[u])
+      #return "@%s ([%s](https://phonebook.cern.ch/phonebook/#search/?query=user%%253A%s))" % (u, self.usermap[u], self.usermap[u])
+    return "@"+u
+  @staticmethod
+  def ghstrip(u):
+    try:
+      u = u[0:u.index("(")]
+    except ValueError:
+      pass
+    return u.strip("@ ")
   def __str__(self):
     if self.approvers == True:
       return "approved"
-    approval_str = [ "%d of %s" % (x["n"], ", ".join(map(lambda s:"@"+s, x["u"]))) for x in self.approvers ]
+    approval_str = [ "%d of %s" % (x["n"], ", ".join(map(self.ghtagmap, x["u"]))) for x in self.approvers ]
     return "; ".join(approval_str)
 
 class State(object):
@@ -308,10 +320,17 @@ def load_perms(f_perms, f_groups, f_mapusers, admins):
   groups = {}
   mapusers = {}
   tests = {}
+  realnames = {}
 
   # Load user mapping (CERN -> GitHub)
   try:
     mapusers = yaml.safe_load(open(f_mapusers))
+    for k in mapusers:
+      if not " " in mapusers[k]:
+        mapusers[k] = mapusers[k] + " " + mapusers[k]
+      un,real = mapusers[k].split(" ", 1)
+      realnames[un] = real  # gh -> full
+      mapusers[k] = un      # cern -> gh
   except (IOError,yaml.YAMLError) as e:
     error("cannot load user mapping from %s: %s" % (f_mapusers, e))
 
@@ -394,7 +413,7 @@ def load_perms(f_perms, f_groups, f_mapusers, admins):
                              approve=admins,
                              num_approve=1))
 
-  return perms,tests
+  return perms,tests,realnames
 
 def format(s, **kwds):
   return s % kwds
@@ -519,9 +538,12 @@ if __name__ == "__main__":
   if not args.more_debug:
     logging.getLogger("github").setLevel(logging.WARNING)
 
-  perms,tests = load_perms("perms.yml", "groups.yml", "mapusers.yml", admins=args.admins.split(","))
+  perms,tests,usermap = load_perms("perms.yml", "groups.yml", "mapusers.yml", admins=args.admins.split(","))
   debug("permissions:\n"+json.dumps(perms, indent=2, default=lambda o: o.__dict__))
   debug("tests:\n"+json.dumps(tests, indent=2))
+  debug("GitHub to full names mapping:\n"+json.dumps(usermap, indent=2))
+
+  setattr(Approvers, "usermap", usermap)
 
   # Get all open pull requests from all configured repositories
   gh = None
