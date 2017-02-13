@@ -23,6 +23,15 @@ except Exception:
 
 # Update current mapping with new
 umap = yaml.safe_load(open("mapusers.yml"))
+pending_maps = get(url).json()["login_mapping"]
+for k in pending_maps:
+  if isinstance(pending_maps[k], dict):
+    for j in umap:
+      if not isinstance(umap[j], dict):
+        # Server has new format, file has old. Convert
+        umap = { x:{"user_github":umap[x],"fullname":umap[x]} for x in umap }
+      break
+  break
 umap.update( get(url).json()["login_mapping"] )
 for k in sorted(umap.keys()):
   print("%s: %s" % (k, umap[k]))
