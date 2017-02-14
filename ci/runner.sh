@@ -2,7 +2,6 @@
 set -o pipefail
 [[ -d $MESOS_SANDBOX ]] && cd "$MESOS_SANDBOX" || true
 mkdir -p log
-exec &> log/pr-$(date --utc +%Y%m%d-%H%M%S).log
 
 # Setup GitLab credentials (to push new data)
 printf "protocol=https\nhost=gitlab.cern.ch\nusername=alibuild\npassword=$GITLAB_TOKEN\n" |
@@ -16,13 +15,7 @@ echo $PR_TOKEN > $HOME/.github-token
 CI_REPO=$CI_REPO # gh_user/gh_repo[:branch]
 CI_REPO_ONLY=${CI_REPO%:*}
 CI_BRANCH=${CI_REPO##*:}
-[[ -d code/.git ]] || git clone https://github.com/$CI_REPO_ONLY ${CI_BRANCH:+-b $CI_BRANCH} code/
-cp code/ci/runner.sh . && chmod +x runner.sh
-if [[ ! $ALREADY_RUN ]]; then
-  export ALREADY_RUN=1
-  exec <&-
-  exec ./runner.sh "$@"
-fi
+git clone https://github.com/$CI_REPO_ONLY ${CI_BRANCH:+-b $CI_BRANCH} code/
 
 # Clone configuration under "conf"
 [[ -d conf/.git ]] || { git clone https://gitlab.cern.ch/ALICEDevOps/ali-marathon.git conf/;
@@ -31,34 +24,34 @@ fi
                           git config user.email "ali.bot@cern.ch";
                         popd; }
 
-# Continuous ops: update
-pushd conf
-  git fetch --all
-  git reset --hard origin/HEAD
-  git clean -fxd
-  pushd ci_conf
-    # Errors in both operations are not fatal
-    ../../code/ci/sync-egroups.py > groups.yml || { rm -f groups.yml; git checkout groups.yml; }
-    ../../code/ci/sync-mapusers.py "$ALICE_GH_API" > mapusers.yml0 && mv -vf mapusers.yml0 mapusers.yml \
-                                                                      || rm -f mapusers.yml0
-    git commit -a -m "CI e-groups/users mapping updated" || true
-    git push
+while [[ 1 ]]; do {
+  # Continuous ops: update
+  pushd conf
+    git fetch --all
+    git reset --hard origin/HEAD
+    git clean -fxd
+    pushd ci_conf
+      # Errors in both operations are not fatal
+      ../../code/ci/sync-egroups.py > groups.yml || { rm -f groups.yml; git checkout groups.yml; }
+      ../../code/ci/sync-mapusers.py "$ALICE_GH_API" > mapusers.yml0 && mv -vf mapusers.yml0 mapusers.yml \
+                                                                        || rm -f mapusers.yml0
+      git commit -a -m "CI e-groups/users mapping updated" || true
+      git push
+    popd
   popd
-popd
-pushd code
-  git fetch --all
-  git reset --hard origin/$([[ "$CI_BRANCH" ]] && echo "$CI_BRANCH" || echo HEAD)
-  git clean -fxd
-  pushd ci
-    for X in ../../conf/ci_conf/*; do
-      ln -nfs $X .
-    done
-    ls -l
-    ./process-pull-request --admins $CI_ADMINS --bot-user alibuild --debug ${DRY_RUN:+--dry-run}
+  pushd code
+    git fetch --all
+    git reset --hard origin/$([[ "$CI_BRANCH" ]] && echo "$CI_BRANCH" || echo HEAD)
+    git clean -fxd
+    pushd ci
+      for X in ../../conf/ci_conf/*; do
+        ln -nfs $X .
+      done
+      ls -l
+      ./process-pull-request --admins $CI_ADMINS --bot-user alibuild --debug ${DRY_RUN:+--dry-run}
+    popd
   popd
-popd
 
-find log/ -name 'pr-*.log' -type f -mtime +5 -delete || true
-sleep $SLEEP
-exec <&-
-exec ./runner.sh "$@"
+  find log/ -name 'pr-*.log' -type f -mtime +5 -delete || true
+  sleep $SLEEP
+} &> log/pr-$(date --utc +%Y%m%d-%H%M%S); done
