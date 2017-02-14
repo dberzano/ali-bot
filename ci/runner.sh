@@ -1,7 +1,8 @@
 #!/bin/bash -xe
 set -o pipefail
-
 [[ -d $MESOS_SANDBOX ]] && cd "$MESOS_SANDBOX" || true
+mkdir -p log
+exec &> log/pr-$(date --utc +%Y%m%d-%H%M%S).log
 
 # Setup GitLab credentials (to push new data)
 printf "protocol=https\nhost=gitlab.cern.ch\nusername=alibuild\npassword=$GITLAB_TOKEN\n" |
@@ -19,8 +20,8 @@ CI_BRANCH=${CI_REPO##*:}
 cp code/ci/runner.sh . && chmod +x runner.sh
 if [[ ! $ALREADY_RUN ]]; then
   export ALREADY_RUN=1
-  mkdir -p log
-  exec ./runner.sh "$@" 2>&1 | tee log/pr-$(date --utc +%Y%m%d-%H%M%S).log
+  exec <&-
+  exec ./runner.sh "$@"
 fi
 
 # Clone configuration under "conf"
@@ -59,4 +60,5 @@ popd
 
 find log/ -name 'pr-*.log' -type f -mtime +5 -delete || true
 sleep $SLEEP
-exec ./runner.sh "$@" 2>&1 | tee log/pr-$(date --utc +%Y%m%d-%H%M%S).log
+exec <&-
+exec ./runner.sh "$@"
