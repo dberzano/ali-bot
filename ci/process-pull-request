@@ -421,6 +421,13 @@ def format(s, **kwds):
 def pull_state_machine(pull, repo, perms, tests, bot_user, admins, dryRun):
 
   if not pull.mergeable:
+    if getStatus(pull, pull.head.sha, "review") != ("error", "conflicts"):
+      commentOnPr(pull, ("@%s: there are conflicts in your changes (%s) you need to fix.\n\n" + \
+                         "_You can have a look at the "                                       + \
+                         "[documentation](http://alisw.github.io/git-advanced/) or you can "  + \
+                         "press the **Resolve conflicts** button and try to fix them from "   + \
+                         "the web interface._") % (pull.user.login, pull.head.sha))
+      setStatus(pull, pull.head.sha, "review", "error", "conflicts")
     info("skipping pull %s#%d (%s): it cannot be merged, status is %s" % \
          (repo.full_name, pull.number, pull.title, pull.mergeable_state))
     return
