@@ -425,8 +425,8 @@ def pull_state_machine(pull, repo, perms, tests, bot_user, admins, dryRun):
          (repo.full_name, pull.number, pull.title, pull.mergeable_state))
     return
 
-  if pull.changed_files > 20:
-    info("skipping pull %s#%d (%s): %d (> 20) files changed" % \
+  if pull.changed_files > 80:
+    info("skipping pull %s#%d (%s): %d (> 80) files changed" % \
          (repo.full_name, pull.number, pull.title, pull.changed_files))
     return
 
