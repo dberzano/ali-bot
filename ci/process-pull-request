@@ -158,7 +158,7 @@ class State(object):
     elif self.approvers() == True:
       info("%s: changes approved, auto merge on test success" % self.sha)
       commentOnPr(pull, "%s: approved: will be automatically merged on successful tests" % self.sha)
-    elif hasChanged:
+    elif hasChanged or getStatus(pull, self.sha, "review")[0] != "pending":
       info("%s: list of approvers has changed to %s, notifying" % (self.sha, self.approvers))
       self.request_approval(pull)
     else:
@@ -172,14 +172,21 @@ class State(object):
     if self.approvers() == True:
       info("%s: merge approved, merging now" % self.sha)
       prMerge(pull)
-    elif hasChanged:
-      info("%s: list of merge approvers has changed to %s, notifying" % (self.sha, self.approvers))
-      self.request_approval(pull)
     else:
-      info("%s: list of merge approvers unchanged, nothing to say" % self.sha)
+      review_status = getStatus(pull, self.sha, "review")[0]
+      if review_status != "success":
+        # restore correct state if conflicts are gone
+        setStatus(pull, self.sha, "review", "success", "changeset approved")
+      if hasChanged or review_status != "success":
+        info("%s: list of merge approvers has changed to %s, notifying" % (self.sha, self.approvers))
+        self.request_approval(pull)
+      else:
+        info("%s: list of merge approvers unchanged, nothing to say" % self.sha)
 
   def action_tests_only(self, pull, perms, tests):
     ok = False
+    if getStatus(pull, self.sha, "review")[0] != "success":
+      setStatus(pull, self.sha, "review", "success", "changeset approved")  # conflicts gone
     for x in tests:
       s = getStatus(pull, self.sha, x)[0]
       debug("%s: required test %s is %s" % (self.sha, x, s))
@@ -195,6 +202,8 @@ class State(object):
 
   def action_tests_automerge(self, pull, perms, tests):
     ok = False
+    if getStatus(pull, self.sha, "review")[0] != "success":
+      setStatus(pull, self.sha, "review", "success", "changeset approved")  # conflicts gone
     for x in tests:
       s = getStatus(pull, self.sha, x)[0]
       debug("%s: required test %s is %s" % (self.sha, x, s))
