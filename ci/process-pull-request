@@ -429,6 +429,8 @@ def format(s, **kwds):
 
 def pull_state_machine(pull, repo, perms, tests, bot_user, admins, dryRun):
 
+  info("~~~ processing pull %s#%d: %s ~~~" % (repo.full_name, pull.number, pull.title))
+
   if not pull.mergeable:
     if getStatus(pull, pull.head.sha, "review") != ("error", "conflicts"):
       commentOnPr(pull, ("@%s: there are conflicts in your changes (%s) you need to fix.\n\n" + \
@@ -445,8 +447,6 @@ def pull_state_machine(pull, repo, perms, tests, bot_user, admins, dryRun):
     info("skipping pull %s#%d (%s): %d (> 80) files changed" % \
          (repo.full_name, pull.number, pull.title, pull.changed_files))
     return
-
-  info("~~~ processing pull %s#%d: %s ~~~" % (repo.full_name, pull.number, pull.title))
 
   state = State(name="STATE_INITIAL",
                 sha=pull.head.sha,
