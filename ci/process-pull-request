@@ -482,7 +482,7 @@ def getStatus(pull, sha, context):
   for s in commit.get_statuses():
     if s.context == context:
       return s.state,s.description
-    break  # first (most recent) only
+      break  # first (most recent) only
   debug("Could not get state for %s" % sha)
   return None,None
 
