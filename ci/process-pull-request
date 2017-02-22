@@ -5,7 +5,7 @@ from os.path import expanduser
 from argparse import ArgumentParser
 import yaml, logging, json
 from logging import debug, info, warning, error
-
+from time import time
 import re
 from sys import exit
 
@@ -432,15 +432,20 @@ def pull_state_machine(pull, repo, perms, tests, bot_user, admins, dryRun):
   info("~~~ processing pull %s#%d: %s ~~~" % (repo.full_name, pull.number, pull.title))
 
   if not pull.mergeable:
-    if getStatus(pull, pull.head.sha, "review") != ("error", "conflicts"):
-      commentOnPr(pull, ("@%s: there are conflicts in your changes (%s) you need to fix.\n\n" + \
-                         "_You can have a look at the "                                       + \
-                         "[documentation](http://alisw.github.io/git-advanced/) or you can "  + \
-                         "press the **Resolve conflicts** button and try to fix them from "   + \
-                         "the web interface._") % (pull.user.login, pull.head.sha))
-      setStatus(pull, pull.head.sha, "review", "error", "conflicts")
-    info("skipping pull %s#%d (%s): it cannot be merged, status is %s" % \
-         (repo.full_name, pull.number, pull.title, pull.mergeable_state))
+    if pull.mergeable_state == "dirty":
+      # It really cannot be merged. Notify user
+      if getStatus(pull, pull.head.sha, "review") != ("error", "conflicts"):
+        commentOnPr(pull, ("@%s: there are conflicts in your changes (%s) you need to fix.\n\n" + \
+                           "_You can have a look at the "                                       + \
+                           "[documentation](http://alisw.github.io/git-advanced/) or you can "  + \
+                           "press the **Resolve conflicts** button and try to fix them from "   + \
+                           "the web interface._") % (pull.user.login, pull.head.sha))
+        setStatus(pull, pull.head.sha, "review", "error", "conflicts")
+      info("skipping pull %s#%d (%s): it cannot be merged, status is \"%s\"" % \
+           (repo.full_name, pull.number, pull.title, pull.mergeable_state))
+    else:  # "unknown"
+      info("skipping pull %s#%d (%s): still computing mergeability status (which is \"%s\")" % \
+           (repo.full_name, pull.number, pull.title, pull.mergeable_state))
     return
 
   if pull.changed_files > 80:
@@ -483,7 +488,7 @@ def getStatus(pull, sha, context):
     if s.context == context:
       return s.state,s.description
       break  # first (most recent) only
-  debug("Could not get state for %s" % sha)
+  debug("Could not get \"%s\" state for %s" % (context, sha))
   return None,None
 
 if __name__ == "__main__":
@@ -574,7 +579,8 @@ if __name__ == "__main__":
       try:
         gh = Github(login_or_token=open(expanduser("~/.github-token")).read().strip())
         gh_req_left,gh_req_limit = gh.rate_limiting
-        info("GitHub API calls: %d calls left (%d calls allowed)" % (gh_req_left,gh_req_limit))
+        info("GitHub API calls: %d calls left (%d calls allowed) - reset in %d seconds" % \
+             (gh_req_left,gh_req_limit,gh.rate_limiting_resettime-time()))
       except (IOError,GithubException) as e:
         error("GitHub API problem: %s" % e)
         break
@@ -593,5 +599,5 @@ if __name__ == "__main__":
 
   if gh:
     gh_req_left_2,gh_req_limit_2 = gh.rate_limiting
-    info("GitHub API calls: %d calls done, %d calls left (%d calls allowed)" % \
-         (gh_req_left-gh_req_left_2,gh_req_left_2,gh_req_limit_2))
+    info("GitHub API calls: %d calls done, %d calls left (%d calls allowed) - reset in %d seconds" % \
+         (gh_req_left-gh_req_left_2,gh_req_left_2,gh_req_limit_2,gh.rate_limiting_resettime-time()))
