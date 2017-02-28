@@ -27,9 +27,9 @@ def process_pull_requests(prs, bot_user, admins, dryRun):
 
   # Load permissions as first thing
   perms,tests,usermap = load_perms("perms.yml", "groups.yml", "mapusers.yml", admins=args.admins.split(","))
-  debug("permissions:\n"+json.dumps(perms, indent=2, default=lambda o: o.__dict__))
-  debug("tests:\n"+json.dumps(tests, indent=2))
-  debug("GitHub to full names mapping:\n"+json.dumps(usermap, indent=2))
+  #debug("permissions:\n"+json.dumps(perms, indent=2, default=lambda o: o.__dict__))
+  #debug("tests:\n"+json.dumps(tests, indent=2))
+  #debug("GitHub to full names mapping:\n"+json.dumps(usermap, indent=2))
   setattr(Approvers, "usermap", usermap)
 
   for pr in prs:
@@ -402,6 +402,31 @@ class PrRPC(object):
     req.setHeader("Content-Type", "application/json")
     return json.dumps(obj)
 
+  @app.route("/", methods=["POST"])
+  def github_callback(self, req):
+    data = json.loads(req.content.read())
+    repo = data.get("repository", {}).get("full_name", None)  # always there
+    prid = None
+    if "pull_request" in data and data.get("action") in [ "opened", "synchronize" ]:
+      # EVENT: pull request just opened
+      prid = data.get("number", None)
+      etype = "pull request opened"
+    elif "issue" in data and data.get("action") == "created" \
+      and isinstance(data["issue"].get("pull_request", None), dict) \
+      and data["issue"].get("closed_at", True) is None \
+      and data.get("sender", {}).get("login", "alibuild") != "alibuild":
+      # EVENT: comment added on an open pull request (and not by a bot)
+      prid = data["issue"].get("number", None)
+      etype = "pull request commented"
+    if repo and prid:
+      prid = int(prid)
+      prfull = "%s#%d" % (repo, prid)
+      info("Received relevant event (%s) for %s" % (etype, prfull))
+      self.items.add(prfull)
+    else:
+      debug("Received unhandled event from GitHub:\n%s" % json.dumps(data, indent=2))
+    return "roger"
+
   @app.route("/stop")
   def stop(self, req):
     reactor.stop()
@@ -513,8 +538,8 @@ def load_perms(f_perms, f_groups, f_mapusers, admins):
         # Map users (unknown discarded)
         setattr(path_rule, k, list(set([ mapusers[u] for u in users if u in mapusers ])))
       if not path_rule.approve:
-        warning("empty list of approvers for %s on %s: defaulting to admins" % \
-                (path_rule.path_regexp, repo))
+        #warning("empty list of approvers for %s on %s: defaulting to admins" % \
+        #        (path_rule.path_regexp, repo))
         path_rule.approve = admins
       path_rule.num_approve = min(path_rule.num_approve, len(path_rule.approve))
 
