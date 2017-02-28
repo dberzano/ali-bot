@@ -158,11 +158,13 @@ class State(object):
     elif self.approvers() == True:
       info("%s: changes approved, auto merge on test success" % self.sha)
       commentOnPr(pull, "%s: approved: will be automatically merged on successful tests" % self.sha)
-    elif hasChanged or getStatus(pull, self.sha, "review")[0] != "pending":
-      info("%s: list of approvers has changed to %s, notifying" % (self.sha, self.approvers))
-      self.request_approval(pull)
     else:
-      info("%s: list of approvers unchanged, nothing to say" % self.sha)
+      review_status = getStatus(pull, self.sha, "review")[0]
+      if hasChanged or (review_status is not None and review_status != "pending"):
+        info("%s: list of approvers has changed to %s, notifying" % (self.sha, self.approvers))
+        self.request_approval(pull)
+      else:
+        info("%s: list of approvers unchanged, nothing to say" % self.sha)
 
   def action_approval2_pending(self, pull, perms, tests):
     hasChanged = False
