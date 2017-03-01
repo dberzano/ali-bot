@@ -554,7 +554,15 @@ def load_perms(f_perms, f_groups, f_mapusers, admins):
 
 def pull_state_machine(pull, repo, perms, tests, bot_user, admins, dryRun):
 
-  info("~~~ processing pull %s#%d: %s ~~~" % (repo.full_name, pull.number, pull.title))
+  info("~~~ processing pull %s#%d: %s (changed files: %d) ~~~" % (repo.full_name, pull.number, pull.title, pull.changed_files))
+
+  if not pull.changed_files:
+    if getStatus(pull, pull.head.sha, "review") != ("error", "empty pull request"):
+      commentOnPr(pull, ("@%s: your pull request changes no files (%s)." + \
+                         "You may want to fix it or close it.") % (pull.user.login, pull.head.sha))
+      setStatus(pull, pull.head.sha, "review", "error", "empty pull request")
+    info("skipping pull %s#%d (%s): it is empty!" % (repo.full_name, pull.number, pull.title))
+    return
 
   if pull.closed_at:
     info("skipping pull %s#%d (%s): closed" % (repo.full_name, pull.number, pull.title))
