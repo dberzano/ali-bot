@@ -163,15 +163,22 @@ class State(object):
            (self.name, self.sha, self.approvers, self.opener, self.haveApproved, self.haveApproved_p2)
 
   def action_check_permissions(self, pull, perms, tests):
-    for fn in pull.get_files():
-      debug("determining permissions for file %s" % fn.filename)
-      for rule in perms:
-        num_approve,approve = rule(fn.filename, pull.user.login)  # approve can be bool or set (not list)
-        if approve:
-          debug("file %s matched by rule %s: %s" % (fn.filename, rule.path_regexp, approve))
-          self.approvers.push(num_approve, approve)
-          break
-      assert approve, "this should not happen: for file %s no rule matches" % fn.filename
+    if  pull.changed_files > 10:
+      # Too many changed files. It's not worth to check every single one of them. This would also
+      # exhaust the API calls. Let's ask for the approval of the masters only.
+      info("this pull request has %d (> 10) changed files: requesting approval from the admins only" % \
+           pull.changed_files)
+      self.approvers.push(1, self.approvers.users_override)
+    else:
+      for fn in pull.get_files():
+        debug("determining permissions for file %s" % fn.filename)
+        for rule in perms:
+          num_approve,approve = rule(fn.filename, pull.user.login)  # approve can be bool or set (not list)
+          if approve:
+            debug("file %s matched by rule %s: %s" % (fn.filename, rule.path_regexp, approve))
+            self.approvers.push(num_approve, approve)
+            break
+        assert approve, "this should not happen: for file %s no rule matches" % fn.filename
     debug("computed list of approvers: %s (override: %s)" % (self.approvers, self.approvers.users_override))
     self.approvers_unchanged = Approvers.from_str(str(self.approvers), users_override=self.approvers.users_override)
     self.action_approval_required(pull, perms, tests)
@@ -583,11 +590,6 @@ def pull_state_machine(pull, repo, perms, tests, bot_user, admins, dryRun):
     else:  # "unknown"
       info("skipping pull %s#%d (%s): still computing mergeability status (which is \"%s\")" % \
            (repo.full_name, pull.number, pull.title, pull.mergeable_state))
-    return
-
-  if pull.changed_files > 80:
-    info("skipping pull %s#%d (%s): %d (> 80) files changed" % \
-         (repo.full_name, pull.number, pull.title, pull.changed_files))
     return
 
   state = State(name="STATE_INITIAL",
