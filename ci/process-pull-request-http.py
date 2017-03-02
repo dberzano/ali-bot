@@ -9,80 +9,7 @@ from twisted.internet.task import LoopingCall
 from twisted.internet import defer, task, reactor, threads
 from time import sleep, time
 from random import randint
-
-# GitHub-specific
 from github import Github,GithubException
-
-# Globals
-gh = None
-gh_repos = {}
-
-def gh_init_repo(repo=None):
-  global gh, gh_repos
-  if not gh:
-    try:
-      gh = Github(login_or_token=open(expanduser("~/.github-token")).read().strip())
-    except (IOError,GithubException) as e:
-      error("GitHub API problem: %s" % e)
-      return False
-  if repo and not repo in gh_repos:
-    debug("Getting GitHub repository %s" % repo)
-    try:
-      gh_repos[repo] = gh.get_repo(repo)
-    except GithubException as e:
-      error("Cannot get GitHub repository: %s" % e)
-      return False
-  return True
-
-# Processes a list of pull requests. Takes as input an iterable of pull requests
-# in the form Group/Repo#PrNum and returns a set of processed pull requests.
-def process_pull_requests(prs, bot_user, admins, dryRun):
-  global gh, gh_repos
-  gh_req_left = -1
-  info("Processing all scheduled pull requests: %d to go" % len(prs))
-  processed = set()
-
-  # Load permissions as first thing
-  perms,tests,usermap = load_perms("perms.yml", "groups.yml", "mapusers.yml", admins=args.admins.split(","))
-  #debug("permissions:\n"+json.dumps(perms, indent=2, default=lambda o: o.__dict__))
-  #debug("tests:\n"+json.dumps(tests, indent=2))
-  #debug("GitHub to full names mapping:\n"+json.dumps(usermap, indent=2))
-  setattr(Approvers, "usermap", usermap)
-
-  for pr in prs:
-    repo,prnum = pr.split("#", 1)
-    prnum = int(prnum)
-    debug("Queued PR: %s#%d" % (repo,prnum))
-    if not gh_init_repo():
-      break
-    gh_req_left,gh_req_limit = gh.rate_limiting
-    info("GitHub API calls: %d calls left (%d calls allowed) - reset in %d seconds" % \
-         (gh_req_left,gh_req_limit,gh.rate_limiting_resettime-time()))
-    if not gh_init_repo(repo):
-      warning("Skipping this pull request, GitHub could not fetch the repo")
-      continue
-
-    try:
-      pull = gh_repos[repo].get_pull(prnum)
-      ok = pull_state_machine(pull,
-                              gh_repos[repo],
-                              perms.get(repo, []),
-                              tests.get(repo, []),
-                              bot_user,
-                              admins,
-                              dryRun)
-    except GithubException:
-      error("Cannot process pull request %s#%d, removing from list" % (repo, prnum))
-      ok = True
-
-    # PR can be removed from list
-    if ok:
-      processed.add(pr)
-  if gh_req_left > 0:
-    gh_req_left_2,gh_req_limit_2 = gh.rate_limiting
-    info("GitHub API calls: %d calls done, %d calls left (%d calls allowed) - reset in %d seconds" % \
-         (gh_req_left-gh_req_left_2,gh_req_left_2,gh_req_limit_2,gh.rate_limiting_resettime-time()))
-  return processed
 
 class Approvers(object):
   def __init__(self, users_override=[]):
@@ -415,11 +342,12 @@ class PrRPC(object):
     self.admins = admins
     self.dryRun = dryRun
     self.gh = None
-    self.gh_repos = []
+    self.gh_repos = {}
+    self.pulls_hashes = {}
     def schedule_process_pull_requests():
       items_to_process = self.items.copy()
-      d = threads.deferToThread(process_pull_requests, items_to_process,
-                                                       self.bot_user, self.admins, self.dryRun)
+      d = threads.deferToThread(self.process_pull_requests, items_to_process,
+                                                            self.bot_user, self.admins, self.dryRun)
       d.addCallback(lambda processed: self.items.difference_update(processed))
       d.addErrback(lambda x: error("Uncaught exception during pull request test: %s" % str(x)))
       d.addBoth(lambda x: reactor.callLater(30, schedule_process_pull_requests))
@@ -433,18 +361,82 @@ class PrRPC(object):
     req.setHeader("Content-Type", "application/json")
     return json.dumps(obj)
 
+  def gh_init_repo(self, repo=None):
+    if not self.gh:
+      try:
+        self.gh = Github(login_or_token=open(expanduser("~/.github-token")).read().strip())
+      except (IOError,GithubException) as e:
+        error("GitHub API problem: %s" % e)
+        return False
+    if repo and not repo in self.gh_repos:
+      debug("Getting GitHub repository %s" % repo)
+      try:
+        self.gh_repos[repo] = self.gh.get_repo(repo)
+      except GithubException as e:
+        error("Cannot get GitHub repository: %s" % e)
+        return False
+    return True
+
   def add_all_open_prs(self):
-    global gh, gh_repos
     perms,_,_ = load_perms("perms.yml", "groups.yml", "mapusers.yml", admins=args.admins.split(","))
     for repo_name in perms:
-      gh_init_repo(repo_name)
+      self.gh_init_repo(repo_name)
       try:
-        for p in gh_repos[repo_name].get_pulls():
+        for p in self.gh_repos[repo_name].get_pulls():
           fullpr = repo_name + "#" + str(p.number)
           debug("Process all: appending %s" % fullpr)
           self.items.add(fullpr)
       except GithubException as e:
         warning("Cannot get pulls for %s: %s" % (repo_name, e))
+
+  # Processes a list of pull requests. Takes as input an iterable of pull requests
+  # in the form Group/Repo#PrNum and returns a set of processed pull requests.
+  def process_pull_requests(self, prs, bot_user, admins, dryRun):
+    gh_req_left = -1
+    info("Processing all scheduled pull requests: %d to go" % len(prs))
+    processed = set()
+
+    # Load permissions as first thing
+    perms,tests,usermap = load_perms("perms.yml", "groups.yml", "mapusers.yml", admins=args.admins.split(","))
+    #debug("permissions:\n"+json.dumps(perms, indent=2, default=lambda o: o.__dict__))
+    #debug("tests:\n"+json.dumps(tests, indent=2))
+    #debug("GitHub to full names mapping:\n"+json.dumps(usermap, indent=2))
+    setattr(Approvers, "usermap", usermap)
+
+    for pr in prs:
+      repo,prnum = pr.split("#", 1)
+      prnum = int(prnum)
+      debug("Queued PR: %s#%d" % (repo,prnum))
+      if not self.gh_init_repo():
+        break
+      gh_req_left,gh_req_limit = self.gh.rate_limiting
+      info("GitHub API calls: %d calls left (%d calls allowed) - reset in %d seconds" % \
+           (gh_req_left,gh_req_limit,self.gh.rate_limiting_resettime-time()))
+      if not self.gh_init_repo(repo):
+        warning("Skipping this pull request, GitHub could not fetch the repo")
+        continue
+
+      try:
+        pull = self.gh_repos[repo].get_pull(prnum)
+        ok = pull_state_machine(pull,
+                                self.gh_repos[repo],
+                                perms.get(repo, []),
+                                tests.get(repo, []),
+                                bot_user,
+                                admins,
+                                dryRun)
+      except GithubException:
+        error("Cannot process pull request %s#%d, removing from list" % (repo, prnum))
+        ok = True
+
+      # PR can be removed from list
+      if ok:
+        processed.add(pr)
+    if gh_req_left > 0:
+      gh_req_left_2,gh_req_limit_2 = self.gh.rate_limiting
+      info("GitHub API calls: %d calls done, %d calls left (%d calls allowed) - reset in %d seconds" % \
+           (gh_req_left-gh_req_left_2,gh_req_left_2,gh_req_limit_2,self.gh.rate_limiting_resettime-time()))
+    return processed
 
   @app.route("/", methods=["POST"])
   def github_callback(self, req):
