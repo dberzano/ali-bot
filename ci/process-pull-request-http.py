@@ -204,7 +204,8 @@ class State(object):
         if u["what"] == "test":
           approveTestsOnly = True
     if self.approvers() == True:
-      setStatus(pull, self.sha, "review", "success", "changeset approved")
+      setStatus(pull, self.sha, "review", "success", \
+                "tests approved" if approveTestsOnly else "merge approved")
       for t in tests:
         setStatus(pull, self.sha, t, "pending", "test required")
     if self.approvers() == True and approveTestsOnly:
@@ -235,8 +236,7 @@ class State(object):
     else:
       review_status = getStatus(pull, self.sha, "review")[0]
       if review_status != "success":
-        # restore correct state if conflicts are gone
-        setStatus(pull, self.sha, "review", "success", "changeset approved")
+        setStatus(pull, self.sha, "review", "success", "tests approved")  # conflicts gone: restore
       if hasChanged or review_status != "success":
         info("%s: list of merge approvers has changed to %s, notifying" % (self.sha, self.approvers))
         self.request_approval(pull)
@@ -246,7 +246,7 @@ class State(object):
   def action_tests_only(self, pull, perms, tests):
     ok = False
     if getStatus(pull, self.sha, "review")[0] != "success":
-      setStatus(pull, self.sha, "review", "success", "changeset approved")  # conflicts gone
+      setStatus(pull, self.sha, "review", "success", "tests approved")  # conflicts gone: restore
     for x in tests:
       s = getStatus(pull, self.sha, x)[0]
       debug("%s: required test %s is %s" % (self.sha, x, s))
@@ -263,7 +263,7 @@ class State(object):
   def action_tests_automerge(self, pull, perms, tests):
     ok = False
     if getStatus(pull, self.sha, "review")[0] != "success":
-      setStatus(pull, self.sha, "review", "success", "changeset approved")  # conflicts gone
+      setStatus(pull, self.sha, "review", "success", "merge approved")  # conflicts gone
     for x in tests:
       s = getStatus(pull, self.sha, x)[0]
       debug("%s: required test %s is %s" % (self.sha, x, s))
