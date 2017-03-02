@@ -346,15 +346,18 @@ class PrRPC(object):
     self.pulls_hashes = {}
     def schedule_process_pull_requests():
       items_to_process = self.items.copy()
+      self.items = set()  # empty queue
       d = threads.deferToThread(self.process_pull_requests, items_to_process,
-                                                            self.bot_user, self.admins, self.dryRun)
-      d.addCallback(lambda processed: self.items.difference_update(processed))
+                                                            self.bot_user,
+                                                            self.admins,
+                                                            self.dryRun)
+      d.addCallback(lambda unprocessed: self.items.update(unprocessed))  # repush (requeue) unprocessed
       d.addErrback(lambda x: error("Uncaught exception during pull request test: %s" % str(x)))
       d.addBoth(lambda x: reactor.callLater(30, schedule_process_pull_requests))
       return d
     self.lc_addall = LoopingCall(self.add_all_open_prs)
-    self.lc_addall.start(600)  # every 10 minutes add all open PRs
-    reactor.callLater(1, schedule_process_pull_requests)
+    reactor.callLater(1, self.lc_addall.start, 600) # every 10 minutes add all open PRs
+    reactor.callLater(10, schedule_process_pull_requests)
     self.app.run(host, port)
 
   def j(self, req, obj):
@@ -378,12 +381,14 @@ class PrRPC(object):
     return True
 
   def add_all_open_prs(self):
+    self.pulls_hashes = {}
     perms,_,_ = load_perms("perms.yml", "groups.yml", "mapusers.yml", admins=args.admins.split(","))
     for repo_name in perms:
       self.gh_init_repo(repo_name)
       try:
         for p in self.gh_repos[repo_name].get_pulls():
           fullpr = repo_name + "#" + str(p.number)
+          self.pulls_hashes[fullpr] = p.head.sha
           debug("Process all: appending %s" % fullpr)
           self.items.add(fullpr)
       except GithubException as e:
@@ -394,7 +399,7 @@ class PrRPC(object):
   def process_pull_requests(self, prs, bot_user, admins, dryRun):
     gh_req_left = -1
     info("Processing all scheduled pull requests: %d to go" % len(prs))
-    processed = set()
+    unprocessed = set(prs)  # keep track of what could not be processed
 
     # Load permissions as first thing
     perms,tests,usermap = load_perms("perms.yml", "groups.yml", "mapusers.yml", admins=args.admins.split(","))
@@ -411,13 +416,18 @@ class PrRPC(object):
         break
       gh_req_left,gh_req_limit = self.gh.rate_limiting
       info("GitHub API calls: %d calls left (%d calls allowed) - reset in %d seconds" % \
-           (gh_req_left,gh_req_limit,self.gh.rate_limiting_resettime-time()))
+           (gh_req_left,gh_req_limit,
+            self.gh.rate_limiting_resettime-time()))
       if not self.gh_init_repo(repo):
         warning("Skipping this pull request, GitHub could not fetch the repo")
         continue
 
+      ok = False
       try:
         pull = self.gh_repos[repo].get_pull(prnum)
+        sha = pull.head.sha
+        debug("PR %s#%d has hash %s" % (repo,prnum,sha))
+        self.pulls_hashes[pr] = sha
         ok = pull_state_machine(pull,
                                 self.gh_repos[repo],
                                 perms.get(repo, []),
@@ -425,18 +435,22 @@ class PrRPC(object):
                                 bot_user,
                                 admins,
                                 dryRun)
-      except GithubException:
-        error("Cannot process pull request %s#%d, removing from list" % (repo, prnum))
+      except GithubException as e:
+        error("Cannot process pull request %s#%d, removing from list: %s" % (repo, prnum, e))
         ok = True
+      except Exception as e:
+        error("Cannot process pull request %s#%d, retrying, strange error: %s" % (repo, prnum, e))
 
       # PR can be removed from list
       if ok:
-        processed.add(pr)
+        unprocessed.remove(pr)
     if gh_req_left > 0:
       gh_req_left_2,gh_req_limit_2 = self.gh.rate_limiting
       info("GitHub API calls: %d calls done, %d calls left (%d calls allowed) - reset in %d seconds" % \
-           (gh_req_left-gh_req_left_2,gh_req_left_2,gh_req_limit_2,self.gh.rate_limiting_resettime-time()))
-    return processed
+           (gh_req_left-gh_req_left_2,
+            gh_req_left_2,gh_req_limit_2,
+            self.gh.rate_limiting_resettime-time()))
+    return unprocessed  # empty set in case of full success
 
   @app.route("/", methods=["POST"])
   def github_callback(self, req):
@@ -447,6 +461,15 @@ class PrRPC(object):
       # EVENT: pull request just opened
       prid = data.get("number", None)
       etype = "pull request opened"
+    elif "state" in data and "context" in data and "sha" in data:
+      # EVENT: state changed, let's hope we have the hash in cache
+      for k,v in self.pulls_hashes.items():
+        if v == data["sha"]:
+          prid = k.split("#", 1)[1]
+          etype = "state changed"
+          break
+      if not prid:
+        warning("State changed event was unhandled: could not find %s in cache" % data["sha"])
     elif "issue" in data and data.get("action") == "created" \
       and isinstance(data["issue"].get("pull_request", None), dict) \
       and data["issue"].get("closed_at", True) is None \
@@ -465,7 +488,8 @@ class PrRPC(object):
 
   @app.route("/list")
   def get_list(self, req):
-    return self.j(req, {"queued":list(self.items)})
+    return self.j(req, {"queued":list(self.items),
+                        "hashes":self.pulls_hashes})
 
   @app.route("/process/<group>/<repo>/<prid>")
   def process(self, req, group, repo, prid):
