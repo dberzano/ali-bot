@@ -412,6 +412,9 @@ class PrRPC(object):
       repo,prnum = pr.split("#", 1)
       prnum = int(prnum)
       debug("Queued PR: %s#%d" % (repo,prnum))
+      if not repo in perms:
+        debug("Skipping %s: not a configured repository" % pr)
+        continue
       if not self.gh_init_repo():
         break
       gh_req_left,gh_req_limit = self.gh.rate_limiting
