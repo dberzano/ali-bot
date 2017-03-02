@@ -43,7 +43,7 @@ while [[ 1 ]]; do {
     git clean -fxd
     pushd ci_conf
       # Errors in both operations are not fatal
-      $PROG_DIR/sync-egroups.py > groups.yml || { rm -f groups.yml; git checkout groups.yml; }
+      $PROG_DIR/sync-egroups.py > groups.yml0 && mv groups.yml0 groups.yml || { rm -f groups.yml; git checkout groups.yml; }
       $PROG_DIR/sync-mapusers.py "$ALICE_GH_API" > mapusers.yml0 && mv -vf mapusers.yml0 mapusers.yml \
                                                                         || rm -f mapusers.yml0
       git commit -a -m "CI e-groups/users mapping updated" || true

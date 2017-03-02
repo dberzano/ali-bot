@@ -17,6 +17,23 @@ from github import Github,GithubException
 gh = None
 gh_repos = {}
 
+def gh_init_repo(repo=None):
+  global gh, gh_repos
+  if not gh:
+    try:
+      gh = Github(login_or_token=open(expanduser("~/.github-token")).read().strip())
+    except (IOError,GithubException) as e:
+      error("GitHub API problem: %s" % e)
+      return False
+  if repo and not repo in gh_repos:
+    debug("Getting GitHub repository %s" % repo)
+    try:
+      gh_repos[repo] = gh.get_repo(repo)
+    except GithubException as e:
+      error("Cannot get GitHub repository: %s" % e)
+      return False
+  return True
+
 # Processes a list of pull requests. Takes as input an iterable of pull requests
 # in the form Group/Repo#PrNum and returns a set of processed pull requests.
 def process_pull_requests(prs, bot_user, admins, dryRun):
@@ -36,24 +53,31 @@ def process_pull_requests(prs, bot_user, admins, dryRun):
     repo,prnum = pr.split("#", 1)
     prnum = int(prnum)
     debug("Queued PR: %s#%d" % (repo,prnum))
-    if not gh:
-      try:
-        gh = Github(login_or_token=open(expanduser("~/.github-token")).read().strip())
-      except (IOError,GithubException) as e:
-        error("GitHub API problem: %s" % e)
-        break
+    if not gh_init_repo():
+      break
     gh_req_left,gh_req_limit = gh.rate_limiting
     info("GitHub API calls: %d calls left (%d calls allowed) - reset in %d seconds" % \
          (gh_req_left,gh_req_limit,gh.rate_limiting_resettime-time()))
-    if not repo in gh_repos:
-      gh_repos[repo] = gh.get_repo(repo)
-    pull = gh_repos[repo].get_pull(prnum)
+    if not gh_init_repo(repo):
+      warning("Skipping this pull request, GitHub could not fetch the repo")
+      continue
 
-    # Call the state machine
-    pull_state_machine(pull, gh_repos[repo], perms.get(repo, []), tests.get(repo, []), bot_user, admins, dryRun)
+    try:
+      pull = gh_repos[repo].get_pull(prnum)
+      ok = pull_state_machine(pull,
+                              gh_repos[repo],
+                              perms.get(repo, []),
+                              tests.get(repo, []),
+                              bot_user,
+                              admins,
+                              dryRun)
+    except GithubException:
+      error("Cannot process pull request %s#%d, removing from list" % (repo, prnum))
+      ok = True
 
-    # PR processed OK
-    processed.add(pr)
+    # PR can be removed from list
+    if ok:
+      processed.add(pr)
   if gh_req_left > 0:
     gh_req_left_2,gh_req_limit_2 = gh.rate_limiting
     info("GitHub API calls: %d calls done, %d calls left (%d calls allowed) - reset in %d seconds" % \
@@ -116,7 +140,6 @@ class Approvers(object):
   def ghtagmap(self, u):
     if u in self.usermap:
       return "@%s (%s)" % (u, self.usermap[u])
-      #return "@%s ([%s](https://phonebook.cern.ch/phonebook/#search/?query=user%%253A%s))" % (u, self.usermap[u], self.usermap[u])
     return "@"+u
   @staticmethod
   def ghstrip(u):
@@ -395,19 +418,33 @@ class PrRPC(object):
     self.gh_repos = []
     def schedule_process_pull_requests():
       items_to_process = self.items.copy()
-      #self.items = set()
       d = threads.deferToThread(process_pull_requests, items_to_process,
                                                        self.bot_user, self.admins, self.dryRun)
       d.addCallback(lambda processed: self.items.difference_update(processed))
       d.addErrback(lambda x: error("Uncaught exception during pull request test: %s" % str(x)))
-      d.addBoth(lambda x: reactor.callLater(5, schedule_process_pull_requests))
+      d.addBoth(lambda x: reactor.callLater(30, schedule_process_pull_requests))
       return d
+    self.lc_addall = LoopingCall(self.add_all_open_prs)
+    self.lc_addall.start(600)  # every 10 minutes add all open PRs
     reactor.callLater(1, schedule_process_pull_requests)
     self.app.run(host, port)
 
   def j(self, req, obj):
     req.setHeader("Content-Type", "application/json")
     return json.dumps(obj)
+
+  def add_all_open_prs(self):
+    global gh, gh_repos
+    perms,_,_ = load_perms("perms.yml", "groups.yml", "mapusers.yml", admins=args.admins.split(","))
+    for repo_name in perms:
+      gh_init_repo(repo_name)
+      try:
+        for p in gh_repos[repo_name].get_pulls():
+          fullpr = repo_name + "#" + str(p.number)
+          debug("Process all: appending %s" % fullpr)
+          self.items.add(fullpr)
+      except GithubException as e:
+        warning("Cannot get pulls for %s: %s" % (repo_name, e))
 
   @app.route("/", methods=["POST"])
   def github_callback(self, req):
@@ -434,25 +471,15 @@ class PrRPC(object):
       debug("Received unhandled event from GitHub:\n%s" % json.dumps(data, indent=2))
     return "roger"
 
-  @app.route("/stop")
-  def stop(self, req):
-    reactor.stop()
-
-  @app.route("/push")
-  def push(self, req):
-    r = randint(0, 1000)
-    self.items.add(r)
-    return self.j(req, {"pushed": r})
-
   @app.route("/list")
   def get_list(self, req):
-    return self.j(req, list(self.items))
+    return self.j(req, {"queued":list(self.items)})
 
   @app.route("/process/<group>/<repo>/<prid>")
   def process(self, req, group, repo, prid):
     pr = "%s/%s#%d" % (group, repo, int(prid))
     self.items.add(pr)
-    return self.j(req, {"scheduled": pr})
+    return self.j(req, {"added_to_queue": pr})
 
   @app.route("/health")
   def health(self, req):
@@ -569,11 +596,11 @@ def pull_state_machine(pull, repo, perms, tests, bot_user, admins, dryRun):
                          "You may want to fix it or close it.") % (pull.user.login, pull.head.sha))
       setStatus(pull, pull.head.sha, "review", "error", "empty pull request")
     info("skipping pull %s#%d (%s): it is empty!" % (repo.full_name, pull.number, pull.title))
-    return
+    return True  # ok
 
   if pull.closed_at:
     info("skipping pull %s#%d (%s): closed" % (repo.full_name, pull.number, pull.title))
-    return
+    return True  # ok
 
   if not pull.mergeable:
     if pull.mergeable_state == "dirty":
@@ -587,10 +614,11 @@ def pull_state_machine(pull, repo, perms, tests, bot_user, admins, dryRun):
         setStatus(pull, pull.head.sha, "review", "error", "conflicts")
       info("skipping pull %s#%d (%s): it cannot be merged, status is \"%s\"" % \
            (repo.full_name, pull.number, pull.title, pull.mergeable_state))
+      return True  # ok to skip
     else:  # "unknown"
       info("skipping pull %s#%d (%s): still computing mergeability status (which is \"%s\")" % \
            (repo.full_name, pull.number, pull.title, pull.mergeable_state))
-    return
+      return False  # we should come back to it
 
   state = State(name="STATE_INITIAL",
                 sha=pull.head.sha,
@@ -620,6 +648,7 @@ def pull_state_machine(pull, repo, perms, tests, bot_user, admins, dryRun):
 
   info("Final state is %s: executing action" % state)
   state.action(pull, perms, tests)
+  return True
 
 def getStatus(pull, sha, context):
   commit = pull.base.repo.get_commit(sha)
