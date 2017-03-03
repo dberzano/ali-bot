@@ -143,7 +143,10 @@ class State(object):
     setStatus(pull, self.sha, "review", "pending", "pending approval")
     commentOnPr(pull, "%s: approval required: %s\n\n" \
                       "_Comment with `+1` to approve and allow automatic merging," \
-                      "or with `+test` to run tests only._" % (self.sha, self.approvers))
+                      "or with `+test` to run tests only. **Please comment on the pull request: " \
+                      "[click here](https://github.com/%s/pull/%d) and comment at the bottom of " \
+                      "the page.**_" % \
+                      (self.sha, self.approvers, pull.base.repo.full_name, pull.number))
 
   def action_approval_pending(self, pull, perms, tests):
     approveTestsOnly = False
@@ -206,8 +209,10 @@ class State(object):
     if ok:
       info("%s: all tests passed, requesting approval from %s" % (self.sha, self.approvers))
       commentOnPr(pull, "%s: tests OK, approval required for merging: %s\n\n" \
-                        "_Comment with `+1` to merge._" % \
-                        (self.sha, str(self.approvers)))
+                        "_Comment with `+1` to merge. **Please comment on the pull request: " \
+                        "[click here](https://github.com/%s/pull/%d) and comment at the bottom " \
+                        "of the page.**_" % \
+                        (self.sha, str(self.approvers), pull.base.repo.full_name, pull.number))
     info("%s: tests are currently in progress, will not auto merge on success" % self.sha)
 
   def action_tests_automerge(self, pull, perms, tests):
@@ -427,6 +432,7 @@ class PrRPC(object):
       debug("Queued PR: %s#%d" % (repo,prnum))
       if not repo in perms:
         debug("Skipping %s: not a configured repository" % pr)
+        unprocessed.remove(pr)
         continue
       if not self.gh_init_repo():
         break
