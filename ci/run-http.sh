@@ -54,4 +54,9 @@ while [[ 1 ]]; do {
 } &>> update.log ; done &
 
 cd $PROG_DIR
-./process-pull-request-http.py --bot-user alibuild --admins $CI_ADMINS ${DRY_RUN:+--dry-run} --debug
+./process-pull-request-http.py --bot-user alibuild                                                \
+                               --admins $CI_ADMINS                                                \
+                               ${DRY_RUN:+--dry-run}                                              \
+                               ${PROCESS_QUEUE_EVERY:+--process-queue-every $PROCESS_QUEUE_EVERY} \
+                               ${PROCESS_ALL_EVERY:+--process-all-every $PROCESS_ALL_EVERY}       \
+                               --debug

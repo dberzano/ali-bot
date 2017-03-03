@@ -337,13 +337,19 @@ class PrRPC(object):
   app = Klein()
   items = set()
 
-  def __init__(self, host, port, bot_user, admins, dryRun):
+  def __init__(self, host, port, bot_user, admins, processQueueEvery, processAllEvery, dryRun):
     self.bot_user = bot_user
     self.admins = admins
     self.dryRun = dryRun
+    self.must_exit = False
     self.gh = None
     self.gh_repos = {}
     self.pulls_hashes = {}
+
+    def set_must_exit():
+      self.must_exit = True
+    reactor.addSystemEventTrigger("before", "shutdown", set_must_exit)
+
     def schedule_process_pull_requests():
       items_to_process = self.items.copy()
       self.items = set()  # empty queue
@@ -353,10 +359,14 @@ class PrRPC(object):
                                                             self.dryRun)
       d.addCallback(lambda unprocessed: self.items.update(unprocessed))  # repush (requeue) unprocessed
       d.addErrback(lambda x: error("Uncaught exception during pull request test: %s" % str(x)))
-      d.addBoth(lambda x: reactor.callLater(30, schedule_process_pull_requests))
+      d.addBoth(lambda x: reactor.callLater(processQueueEvery, schedule_process_pull_requests))
       return d
-    self.lc_addall = LoopingCall(self.add_all_open_prs)
-    reactor.callLater(1, self.lc_addall.start, 600) # every 10 minutes add all open PRs
+
+    if processAllEvery <= 0:
+      warning("Pull requests will be processed only upon callbacks")
+    else:
+      reactor.callLater(1, LoopingCall(self.add_all_open_prs).start, processAllEvery)
+
     reactor.callLater(10, schedule_process_pull_requests)
     self.app.run(host, port)
 
@@ -409,6 +419,9 @@ class PrRPC(object):
     setattr(Approvers, "usermap", usermap)
 
     for pr in prs:
+      if self.must_exit:
+        info("Interrupting loop: must exit")
+        break
       repo,prnum = pr.split("#", 1)
       prnum = int(prnum)
       debug("Queued PR: %s#%d" % (repo,prnum))
@@ -680,10 +693,10 @@ def getStatus(pull, sha, context):
 
 if __name__ == "__main__":
   parser = ArgumentParser()
-  parser.add_argument("-n", "--dry-run", dest="dryRun",
+  parser.add_argument("--dry-run", dest="dryRun",
                       action="store_true", default=False,
                       help="Do not modify Github")
-  parser.add_argument("-d", "--debug", dest="debug",
+  parser.add_argument("--debug", dest="debug",
                       action="store_true", default=False,
                       help="Be verbose in debug output")
   parser.add_argument("--more-debug", dest="more_debug",
@@ -693,12 +706,20 @@ if __name__ == "__main__":
                       help="GitHub bot username (mandatory)")
   parser.add_argument("--admins", dest="admins",
                       help="Comma-separated list of GitHub usernames of admins (mandatory)")
-  parser.add_argument("--limit", dest="limit",
-                      help="Comma-separated list of GitHub repos/PRs to limit to")
+  parser.add_argument("--process-queue-every", dest="processQueueEvery", default=30, type=int,
+                      help="Accumulate pull requests and process them every that many seconds")
+  parser.add_argument("--process-all-every", dest="processAllEvery", default=600, type=int,
+                      help="Process all pull requests every that many seconds (0: callbacks only)")
   args = parser.parse_args()
   if args.more_debug: args.debug = True
-  if not args.bot_user: parser.error("Please specify the bot's user name on GitHub")
-  if not args.admins: parser.error("Please specify the GitHub usernames of admins")
+  if not args.bot_user:
+    parser.error("Please specify the bot's user name on GitHub (--bot-user)")
+  if not args.admins:
+    parser.error("Please specify the GitHub usernames of admins (--admins)")
+  if args.processQueueEvery < 5:
+    parser.error("--process-queue-every must be at least 5 seconds")
+  if args.processAllEvery > 0 and args.processAllEvery < 10:
+    parser.error("--process-all-every must be either 0 (disable) or at least 10 seconds")
 
   logger = logging.getLogger()
   loggerHandler = logging.StreamHandler()
@@ -737,4 +758,6 @@ if __name__ == "__main__":
                 port=8000,
                 bot_user=args.bot_user,
                 admins=args.admins.split(","),
+                processQueueEvery=args.processQueueEvery,
+                processAllEvery=args.processAllEvery,
                 dryRun=args.dryRun)
