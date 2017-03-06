@@ -42,6 +42,7 @@ class MetaGit(object):
     pull.mergeable       = self.gh_pulls[pr].mergeable
     pull.mergeable_state = self.gh_pulls[pr].mergeable_state
     pull.who             = self.gh_pulls[pr].user.login
+    pull.when            = self.gh_pulls[pr].head.repo.get_commit(pull.sha).commit.committer.date
     return pull
 
   def get_statuses(self, pr, contexts):
@@ -114,6 +115,20 @@ class MetaGit(object):
       self.gh_pulls[pr].create_issue_comment(comment)
     except GithubException as e:
       raise MetaGitException("Cannot create comment %s on %s: %s" % (comment, pr, e))
+
+  def get_comments(self, pr):
+    # Gets all comments in a pull request. Based on generators
+    self.get_pull(pr, cached=True)
+    try:
+      for c in self.gh_pulls[pr].get_issue_comments():
+        cn = namedtuple("MetaComment", ["body", "firstline", "who", "when"])
+        cn.body  = c.body
+        cn.short = cn.body.split("\n", 1)[0]
+        cn.who   = c.user.login
+        cn.when  = c.created_at
+        yield cn
+    except GithubException as e:
+      raise MetaGitException("Cannot get comments for %s: %s" % (pr, e))
 
   def merge(self, pr):
     # Merge a pull request

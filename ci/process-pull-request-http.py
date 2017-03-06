@@ -489,20 +489,13 @@ class PrRPC(object):
                   approvers=Approvers(users_override=admins),
                   haveApproved=[])
 
-    commit_date = None  # lazy (save API calls)
-
-    for comment in pull.get_issue_comments():
-      if not commit_date:
-        commit_date = pull.head.repo.get_commit(pull.head.sha).commit.committer.date
-      comment_date = comment.created_at
-      commenter = comment.user.login
-      first_line = comment.body.split("\n", 1)[0].strip()
-      if (comment_date-commit_date).total_seconds() < 0:
-        info("* %s @ %s UTC: %s ==> skipping" % (commenter, comment_date, first_line))
+    for comment in self.git.get_comments(pr):
+      if (comment.when-pull.when).total_seconds() < 0:
+        info("* %s @ %s UTC: %s ==> skipping" % (comment.who, comment.when, comment.short))
         continue
-      info("* %s @ %s UTC: %s" % (commenter, comment_date, first_line))
+      info("* %s @ %s UTC: %s" % (comment.who, comment.when, comment.short))
       for transition in TRANSITIONS:
-        new_state = transition.evolve(state, commenter, first_line, [bot_user]+admins)
+        new_state = transition.evolve(state, comment.who, comment.short, [bot_user]+admins)
         if not new_state is state:
           # A transition occurred
           info("  ==> %s" % new_state)
