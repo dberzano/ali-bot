@@ -9,7 +9,7 @@ from twisted.internet.task import LoopingCall
 from twisted.internet import defer, task, reactor, threads
 from time import sleep, time
 from random import randint
-from github import Github,GithubException
+from metagit import MetaGit,MetaGitException
 
 class Approvers(object):
   def __init__(self, users_override=[]):
@@ -347,8 +347,9 @@ class PrRPC(object):
     self.admins = admins
     self.dryRun = dryRun
     self.must_exit = False
-    self.gh = None
-    self.gh_repos = {}
+    self.git = MetaGit(backend="GitHub",
+                       token=open(expanduser("~/.github-token")).read().strip(),
+                       rw=not dryRun)
     self.pulls_hashes = {}
 
     def set_must_exit():
@@ -379,22 +380,6 @@ class PrRPC(object):
     req.setHeader("Content-Type", "application/json")
     return json.dumps(obj)
 
-  def gh_init_repo(self, repo=None):
-    if not self.gh:
-      try:
-        self.gh = Github(login_or_token=open(expanduser("~/.github-token")).read().strip())
-      except (IOError,GithubException) as e:
-        error("GitHub API problem: %s" % e)
-        return False
-    if repo and not repo in self.gh_repos:
-      debug("Getting GitHub repository %s" % repo)
-      try:
-        self.gh_repos[repo] = self.gh.get_repo(repo)
-      except GithubException as e:
-        error("Cannot get GitHub repository: %s" % e)
-        return False
-    return True
-
   def add_all_open_prs(self):
     self.pulls_hashes = {}
     perms,_,_ = load_perms("perms.yml", "groups.yml", "mapusers.yml", admins=args.admins.split(","))
@@ -417,7 +402,7 @@ class PrRPC(object):
     unprocessed = set(prs)  # keep track of what could not be processed
 
     # Load permissions as first thing
-    perms,tests,usermap = load_perms("perms.yml", "groups.yml", "mapusers.yml", admins=args.admins.split(","))
+    perms,tests,usermap = load_perms("perms.yml", "groups.yml", "mapusers.yml", admins=admins)
     #debug("permissions:\n"+json.dumps(perms, indent=2, default=lambda o: o.__dict__))
     #debug("tests:\n"+json.dumps(tests, indent=2))
     #debug("GitHub to full names mapping:\n"+json.dumps(usermap, indent=2))
@@ -434,30 +419,19 @@ class PrRPC(object):
         debug("Skipping %s: not a configured repository" % pr)
         unprocessed.remove(pr)
         continue
-      if not self.gh_init_repo():
-        break
-      gh_req_left,gh_req_limit = self.gh.rate_limiting
+      gh_req_left,gh_req_limit,gh_reset = self.git.get_rate_limit()
       info("GitHub API calls: %d calls left (%d calls allowed) - reset in %d seconds" % \
-           (gh_req_left,gh_req_limit,
-            self.gh.rate_limiting_resettime-time()))
-      if not self.gh_init_repo(repo):
-        warning("Skipping this pull request, GitHub could not fetch the repo")
-        continue
+           (gh_req_left,gh_req_limit,gh_reset-time()))
 
       ok = False
       try:
-        pull = self.gh_repos[repo].get_pull(prnum)
-        sha = pull.head.sha
-        debug("PR %s#%d has hash %s" % (repo,prnum,sha))
-        self.pulls_hashes[pr] = sha
-        ok = pull_state_machine(pull,
-                                self.gh_repos[repo],
-                                perms.get(repo, []),
-                                tests.get(repo, []),
-                                bot_user,
-                                admins,
-                                dryRun)
-      except GithubException as e:
+        ok = self.pull_state_machine(pr,
+                                     perms.get(repo, []),
+                                     tests.get(repo, []),
+                                     bot_user,
+                                     admins,
+                                     dryRun)
+      except MetaGitException as e:
         error("Cannot process pull request %s#%d, removing from list: %s" % (repo, prnum, e))
         ok = True
       except Exception as e:
@@ -467,12 +441,77 @@ class PrRPC(object):
       if ok:
         unprocessed.remove(pr)
     if gh_req_left > 0:
-      gh_req_left_2,gh_req_limit_2 = self.gh.rate_limiting
+      gh_req_left_2,gh_req_limit_2,gh_reset = self.git.get_rate_limit()
       info("GitHub API calls: %d calls done, %d calls left (%d calls allowed) - reset in %d seconds" % \
            (gh_req_left-gh_req_left_2,
             gh_req_left_2,gh_req_limit_2,
-            self.gh.rate_limiting_resettime-time()))
+            gh_reset-time()))
     return unprocessed  # empty set in case of full success
+
+  def pull_state_machine(self, pr, perms, tests, bot_user, admins, dryRun):
+
+    pull = self.git.get_pull(pr)
+    info("")
+    info("~~~ processing %s: %s (changed files: %d) ~~~" % (pr, pull.title, pull.changed_files))
+
+    if pull.closed_at:
+      info("%s: skipping: closed" % pr)
+      return True
+
+    if not pull.changed_files:
+      if self.git.get_status(pr, "review") != ("error", "empty pull request"):
+        self.git.add_comment(pr, ("@%s: your pull request changes no files (%s)." + \
+                                  "You may want to fix it or close it.") % \
+                                  (pull.who, pull.sha))
+        self.git.set_status(pr, "review", "error", "empty pull request")
+      info("%s: skipping: empty!" % pr)
+      return True
+
+    if not pull.mergeable:
+      if pull.mergeable_state == "dirty":
+        # It really cannot be merged. Notify user
+        if self.git.get_status(pr, "review") != ("error", "conflicts"):
+          self.git.add_comment(pr, ("@%s: there are conflicts in your changes (%s) you need to fix.\n\n" + \
+                                    "_You can have a look at the "                                       + \
+                                    "[documentation](http://alisw.github.io/git-advanced/) or you can "  + \
+                                    "press the **Resolve conflicts** button and try to fix them from "   + \
+                                    "the web interface._") % (pull.who, pull.sha))
+          self.git.set_status(pr, "review", "error", "conflicts")
+        info("%s: skipping: cannot merge" % pr)
+        return True
+      else:  # mergeable_state is "unknown"
+        info("%s: skipping checking mergeability (state is \"%s\")" % (pr, pull.mergeable_state))
+        return False  # we should come back to it
+
+    state = State(name="STATE_INITIAL",
+                  sha=pull.sha,
+                  dryRun=args.dryRun,
+                  approvers=Approvers(users_override=admins),
+                  haveApproved=[])
+
+    commit_date = None  # lazy (save API calls)
+
+    for comment in pull.get_issue_comments():
+      if not commit_date:
+        commit_date = pull.head.repo.get_commit(pull.head.sha).commit.committer.date
+      comment_date = comment.created_at
+      commenter = comment.user.login
+      first_line = comment.body.split("\n", 1)[0].strip()
+      if (comment_date-commit_date).total_seconds() < 0:
+        info("* %s @ %s UTC: %s ==> skipping" % (commenter, comment_date, first_line))
+        continue
+      info("* %s @ %s UTC: %s" % (commenter, comment_date, first_line))
+      for transition in TRANSITIONS:
+        new_state = transition.evolve(state, commenter, first_line, [bot_user]+admins)
+        if not new_state is state:
+          # A transition occurred
+          info("  ==> %s" % new_state)
+          state = new_state
+          break
+
+    info("Final state is %s: executing action" % state)
+    state.action(pull, perms, tests)
+    return True
 
   @app.route("/", methods=["POST"])
   def github_callback(self, req):
@@ -624,70 +663,6 @@ def load_perms(f_perms, f_groups, f_mapusers, admins):
 
   return perms,tests,realnames
 
-def pull_state_machine(pull, repo, perms, tests, bot_user, admins, dryRun):
-
-  info("~~~ processing pull %s#%d: %s (changed files: %d) ~~~" % (repo.full_name, pull.number, pull.title, pull.changed_files))
-
-  if not pull.changed_files:
-    if getStatus(pull, pull.head.sha, "review") != ("error", "empty pull request"):
-      commentOnPr(pull, ("@%s: your pull request changes no files (%s)." + \
-                         "You may want to fix it or close it.") % (pull.user.login, pull.head.sha))
-      setStatus(pull, pull.head.sha, "review", "error", "empty pull request")
-    info("skipping pull %s#%d (%s): it is empty!" % (repo.full_name, pull.number, pull.title))
-    return True  # ok
-
-  if pull.closed_at:
-    info("skipping pull %s#%d (%s): closed" % (repo.full_name, pull.number, pull.title))
-    return True  # ok
-
-  if not pull.mergeable:
-    if pull.mergeable_state == "dirty":
-      # It really cannot be merged. Notify user
-      if getStatus(pull, pull.head.sha, "review") != ("error", "conflicts"):
-        commentOnPr(pull, ("@%s: there are conflicts in your changes (%s) you need to fix.\n\n" + \
-                           "_You can have a look at the "                                       + \
-                           "[documentation](http://alisw.github.io/git-advanced/) or you can "  + \
-                           "press the **Resolve conflicts** button and try to fix them from "   + \
-                           "the web interface._") % (pull.user.login, pull.head.sha))
-        setStatus(pull, pull.head.sha, "review", "error", "conflicts")
-      info("skipping pull %s#%d (%s): it cannot be merged, status is \"%s\"" % \
-           (repo.full_name, pull.number, pull.title, pull.mergeable_state))
-      return True  # ok to skip
-    else:  # "unknown"
-      info("skipping pull %s#%d (%s): still computing mergeability status (which is \"%s\")" % \
-           (repo.full_name, pull.number, pull.title, pull.mergeable_state))
-      return False  # we should come back to it
-
-  state = State(name="STATE_INITIAL",
-                sha=pull.head.sha,
-                dryRun=args.dryRun,
-                approvers=Approvers(users_override=admins),
-                haveApproved=[])
-
-  commit_date = None  # lazy (save API calls)
-
-  for comment in pull.get_issue_comments():
-    if not commit_date:
-      commit_date = pull.head.repo.get_commit(pull.head.sha).commit.committer.date
-    comment_date = comment.created_at
-    commenter = comment.user.login
-    first_line = comment.body.split("\n", 1)[0].strip()
-    if (comment_date-commit_date).total_seconds() < 0:
-      info("* %s @ %s UTC: %s ==> skipping" % (commenter, comment_date, first_line))
-      continue
-    info("* %s @ %s UTC: %s" % (commenter, comment_date, first_line))
-    for transition in TRANSITIONS:
-      new_state = transition.evolve(state, commenter, first_line, [bot_user]+admins)
-      if not new_state is state:
-        # A transition occurred
-        info("  ==> %s" % new_state)
-        state = new_state
-        break
-
-  info("Final state is %s: executing action" % state)
-  state.action(pull, perms, tests)
-  return True
-
 def getStatus(pull, sha, context):
   commit = pull.base.repo.get_commit(sha)
   for s in commit.get_statuses():
@@ -698,6 +673,7 @@ def getStatus(pull, sha, context):
   return None,None
 
 if __name__ == "__main__":
+
   parser = ArgumentParser()
   parser.add_argument("--dry-run", dest="dryRun",
                       action="store_true", default=False,
@@ -735,30 +711,6 @@ if __name__ == "__main__":
   if not args.more_debug:
     logging.getLogger("github").setLevel(logging.WARNING)
   logger.addHandler(loggerHandler)
-
-  if args.dryRun:
-    commentOnPr = lambda pr, comment: info("dry run; would comment the following: %s" % (comment))
-    setStatus = lambda pull, sha, context, state, message: \
-                  info("dry run; would set for context %s state %s, message %s for %s" % (context, state, message, sha))
-    prMerge = lambda pull: info("dry run; would have merged this pull request")
-  else:
-    def commentOnPr(pr, comment):
-      info("commenting: %s" % comment)
-      pr.create_issue_comment(comment)
-    def setStatus(pull, sha, context, state, message):
-      add_state = True
-      commit = pull.base.repo.get_commit(sha)
-      for s in commit.get_statuses():
-        if s.context == context and s.state == state and s.description == message:
-          debug("most recent %s state for %s is already %s (%s)" % (context, sha, state, message))
-          add_state = False
-        break  # first (most recent) only
-      if add_state:
-        info("setting state %s (%s) for %s" % (state, message, sha))
-        commit.create_status(state, "", message, context)
-    def prMerge(pull):
-      info("merging pull request")
-      pull.merge()
 
   prrpc = PrRPC(host="0.0.0.0",
                 port=8000,
