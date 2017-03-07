@@ -2,7 +2,12 @@ from github import Github, GithubException
 from collections import namedtuple
 from logging import debug, info, warning, error
 
+MetaPull = namedtuple("MetaPull", [ "name", "repo", "num", "title", "changed_files", "sha",
+                                    "closed_at", "mergeable", "mergeable_state", "who", "when",
+                                    "get_files" ])
+
 class MetaGit(object):
+
 
   def __init__(self, backend, token, rw=True):
     # Set rw to False to only read from GitHub ("dry run")
@@ -37,20 +42,20 @@ class MetaGit(object):
         self.gh_pulls[pr] = self.gh_repos[repo].get_pull(num)
       except GithubException as e:
         raise MetaGitException("Cannot get pull request %s: %s" % (pr, e))
-    pull = namedtuple("MetaPull", ["title", "hash", "changed_files"])
-    pull.name            = pr
-    pull.repo            = repo
-    pull.num             = num
-    pull.title           = self.gh_pulls[pr].title
-    pull.changed_files   = self.gh_pulls[pr].changed_files
-    pull.sha             = self.gh_pulls[pr].head.sha
-    pull.closed_at       = self.gh_pulls[pr].closed_at
-    pull.mergeable       = self.gh_pulls[pr].mergeable
-    pull.mergeable_state = self.gh_pulls[pr].mergeable_state
-    pull.who             = self.gh_pulls[pr].user.login
-    pull.when            = self.gh_pulls[pr].head.repo.get_commit(pull.sha).commit.committer.date
-    pull.get_files       = self.gh_pulls[pr].get_files  # TODO
+    pull = MetaPull(name            = pr,
+                    repo            = repo,
+                    num             = num,
+                    title           = self.gh_pulls[pr].title,
+                    changed_files   = self.gh_pulls[pr].changed_files,
+                    sha             = self.gh_pulls[pr].head.sha,
+                    closed_at       = self.gh_pulls[pr].closed_at,
+                    mergeable       = self.gh_pulls[pr].mergeable,
+                    mergeable_state = self.gh_pulls[pr].mergeable_state,
+                    who             = self.gh_pulls[pr].user.login,
+                    when            = self.gh_pulls[pr].head.repo.get_commit(self.gh_pulls[pr].head.sha).commit.committer.date,
+                    get_files       = self.gh_pulls[pr].get_files)  # TODO
     return pull
+
 
   def get_pulls(self, repo):
     # Returns a set of pull requests for this repository, and caches the objects
