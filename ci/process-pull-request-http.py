@@ -397,7 +397,6 @@ class PrRPC(object):
   # Processes a list of pull requests. Takes as input an iterable of pull requests
   # in the form Group/Repo#PrNum and returns a set of processed pull requests.
   def process_pull_requests(self, prs, bot_user, admins, dryRun):
-    gh_req_left = -1
     info("Processing all scheduled pull requests: %d to go" % len(prs))
     unprocessed = set(prs)  # keep track of what could not be processed
 
@@ -407,6 +406,10 @@ class PrRPC(object):
     #debug("tests:\n"+json.dumps(tests, indent=2))
     #debug("GitHub to full names mapping:\n"+json.dumps(usermap, indent=2))
     setattr(Approvers, "usermap", usermap)
+
+    gh_req_left,gh_req_limit,gh_reset = self.git.get_rate_limit()
+    info("GitHub API calls: %d calls left (%d calls allowed) - reset in %d seconds" % \
+         (gh_req_left,gh_req_limit,gh_reset-time()))
 
     for pr in prs:
       if self.must_exit:
@@ -419,9 +422,6 @@ class PrRPC(object):
         debug("Skipping %s: not a configured repository" % pr)
         unprocessed.remove(pr)
         continue
-      gh_req_left,gh_req_limit,gh_reset = self.git.get_rate_limit()
-      info("GitHub API calls: %d calls left (%d calls allowed) - reset in %d seconds" % \
-           (gh_req_left,gh_req_limit,gh_reset-time()))
 
       ok = False
       try:

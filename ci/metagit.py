@@ -18,7 +18,11 @@ class MetaGit(object):
 
   def get_rate_limit(self):
     # Returns a tuple with three elements: API calls left, limit, reset time (s)
-    return self.rate_left,self.rate_limit,self.rate_reset
+    try:
+      a,b = self.gh.rate_limiting
+      return a,b,self.gh.rate_limiting_resettime
+    except GithubException as e:
+      raise MetaGitException("Cannot get GitHub rate limiting")
 
   def get_pull(self, pr, cached=False):
     # Given pr in group/repo#num format, returns a MetaPull with attributes. No cache by default
