@@ -112,8 +112,9 @@ class State(object):
     return "%s: sha: %s, approvers: %s, opener: %s, have approved: %s, have approved (2): %s" % \
            (self.name, self.sha, self.approvers, self.opener, self.haveApproved, self.haveApproved_p2)
 
-  def action_check_permissions(self, pull, perms, tests):
-    if  pull.changed_files > 10:
+  def action_check_permissions(self, git, pr, perms, tests):
+    pull = git.get_pull(pr, cached=True)
+    if pull.changed_files > 10:
       # Too many changed files. It's not worth to check every single one of them. This would also
       # exhaust the API calls. Let's ask for the approval of the masters only.
       info("this pull request has %d (> 10) changed files: requesting approval from the admins only" % \
@@ -123,7 +124,7 @@ class State(object):
       for fn in pull.get_files():
         debug("determining permissions for file %s" % fn.filename)
         for rule in perms:
-          num_approve,approve = rule(fn.filename, pull.user.login)  # approve can be bool or set (not list)
+          num_approve,approve = rule(fn.filename, pull.who)  # approve can be bool or set (not list)
           if approve:
             debug("file %s matched by rule %s: %s" % (fn.filename, rule.path_regexp, approve))
             self.approvers.push(num_approve, approve)
@@ -131,24 +132,26 @@ class State(object):
         assert approve, "this should not happen: for file %s no rule matches" % fn.filename
     debug("computed list of approvers: %s (override: %s)" % (self.approvers, self.approvers.users_override))
     self.approvers_unchanged = Approvers.from_str(str(self.approvers), users_override=self.approvers.users_override)
-    self.action_approval_required(pull, perms, tests)
+    self.action_approval_required(git, pr, perms, tests)
 
-  def action_approval_required(self, pull, perms, tests):
-    self.action_approval_pending(pull, perms, tests)
+  def action_approval_required(self, git, pr, perms, tests):
+    pull = git.get_pull(pr, cached=True)
+    self.action_approval_pending(git, pr, perms, tests)
     if self.approvers() != True:
       info("%s: approval required by: %s" % (self.sha, self.approvers))
-      self.request_approval(pull)
+      self.request_approval(git, pr)
 
-  def request_approval(self, pull):
-    setStatus(pull, self.sha, "review", "pending", "pending approval")
-    commentOnPr(pull, "%s: approval required: %s\n\n" \
-                      "_Comment with `+1` to approve and allow automatic merging," \
-                      "or with `+test` to run tests only. **Please comment on the pull request: " \
-                      "[click here](https://github.com/%s/pull/%d) and comment at the bottom of " \
-                      "the page.**_" % \
-                      (self.sha, self.approvers, pull.base.repo.full_name, pull.number))
+  def request_approval(self, git, pr):
+    git.set_status(pr, "review", "pending", "pending approval")
+    pull = git.get_pull(pr, cached=True)
+    git.add_comment(pr, "%s: approval required: %s\n\n" \
+                        "_Comment with `+1` to approve and allow automatic merging," \
+                        "or with `+test` to run tests only. **Please comment on the pull request: " \
+                        "[click here](https://github.com/%s/pull/%d) and comment at the bottom of " \
+                        "the page.**_" % \
+                        (self.sha, self.approvers, pull.repo, pull.num))
 
-  def action_approval_pending(self, pull, perms, tests):
+  def action_approval_pending(self, git, pr, perms, tests):
     approveTestsOnly = False
     hasChanged = False
     for u in self.haveApproved:
@@ -157,76 +160,77 @@ class State(object):
         if u["what"] == "test":
           approveTestsOnly = True
     if self.approvers() == True:
-      setStatus(pull, self.sha, "review", "success", \
-                "tests approved" if approveTestsOnly else "merge approved")
+      git.set_status(pr, "review", "success", \
+                         "tests approved" if approveTestsOnly else "merge approved")
       for t in tests:
-        setStatus(pull, self.sha, t, "pending", "test required")
+        git.set_status(pr, t, "pending", "test required")
     if self.approvers() == True and approveTestsOnly:
       info("%s: only testing approved, no auto merge on test success" % self.sha)
-      commentOnPr(pull, "%s: testing approved: " \
-                        "will not be automatically merged; starting testing. " \
-                        "If testing succeeds, merging will require further approval from %s" % \
-                        (self.sha, str(self.approvers_unchanged)))
+      git.add_comment(pr, "%s: testing approved: " \
+                          "will not be automatically merged; starting testing. " \
+                          "If testing succeeds, merging will require further approval from %s" % \
+                          (self.sha, str(self.approvers_unchanged)))
     elif self.approvers() == True:
       info("%s: changes approved, auto merge on test success" % self.sha)
-      commentOnPr(pull, "%s: approved: will be automatically merged on successful tests" % self.sha)
+      git.add_comment(pr, "%s: approved: will be automatically merged on successful tests" % self.sha)
     else:
-      review_status = getStatus(pull, self.sha, "review")[0]
+      review_status = git.get_status(pr, "review")[0]
       if hasChanged or (review_status is not None and review_status != "pending"):
         info("%s: list of approvers has changed to %s, notifying" % (self.sha, self.approvers))
-        self.request_approval(pull)
+        self.request_approval(git, pr)
       else:
         info("%s: list of approvers unchanged, nothing to say" % self.sha)
 
-  def action_approval2_pending(self, pull, perms, tests):
+  def action_approval2_pending(self, git, pr, perms, tests):
     hasChanged = False
     for u in self.haveApproved_p2:
       if self.approvers.approve(u["u"]):
         hasChanged = True
     if self.approvers() == True:
       info("%s: merge approved, merging now" % self.sha)
-      prMerge(pull)
+      git.merge(pr)
     else:
-      review_status = getStatus(pull, self.sha, "review")[0]
+      review_status = git.get_status(pr, "review")[0]
       if review_status != "success":
-        setStatus(pull, self.sha, "review", "success", "tests approved")  # conflicts gone: restore
+        git.set_status(pr, "review", "success", "tests approved")  # conflicts gone: restore
       if hasChanged or review_status != "success":
         info("%s: list of merge approvers has changed to %s, notifying" % (self.sha, self.approvers))
-        self.request_approval(pull)
+        self.request_approval(git, pr)
       else:
         info("%s: list of merge approvers unchanged, nothing to say" % self.sha)
 
-  def action_tests_only(self, pull, perms, tests):
+  def action_tests_only(self, git, pr, perms, tests):
     ok = False
-    if getStatus(pull, self.sha, "review")[0] != "success":
-      setStatus(pull, self.sha, "review", "success", "tests approved")  # conflicts gone: restore
+    if git.get_status(pr, "review")[0] != "success":
+      git.set_status(pr, "review", "success", "tests approved")  # conflicts gone: restore
     for x in tests:
-      s = getStatus(pull, self.sha, x)[0]
+      s = git.get_status(pr, x)[0]
       debug("%s: required test %s is %s" % (self.sha, x, s))
       ok = (s == "success")
       if not ok:
         break
     if ok:
+      pull = git.get_pull(pr, cached=True)
       info("%s: all tests passed, requesting approval from %s" % (self.sha, self.approvers))
-      commentOnPr(pull, "%s: tests OK, approval required for merging: %s\n\n" \
-                        "_Comment with `+1` to merge. **Please comment on the pull request: " \
-                        "[click here](https://github.com/%s/pull/%d) and comment at the bottom " \
-                        "of the page.**_" % \
-                        (self.sha, str(self.approvers), pull.base.repo.full_name, pull.number))
+      git.add_comment(pr, "%s: tests OK, approval required for merging: %s\n\n" \
+                          "_Comment with `+1` to merge. **Please comment on the pull request: " \
+                          "[click here](https://github.com/%s/pull/%d) and comment at the bottom " \
+                          "of the page.**_" % \
+                          (self.sha, str(self.approvers), pull.repo, pull.num))
     info("%s: tests are currently in progress, will not auto merge on success" % self.sha)
 
-  def action_tests_automerge(self, pull, perms, tests):
+  def action_tests_automerge(self, git, pr, perms, tests):
     ok = False
-    if getStatus(pull, self.sha, "review")[0] != "success":
-      setStatus(pull, self.sha, "review", "success", "merge approved")  # conflicts gone
+    if git.get_status(pr, "review")[0] != "success":
+      git.set_status(pr, "review", "success", "merge approved")  # conflicts gone
     for x in tests:
-      s = getStatus(pull, self.sha, x)[0]
+      s = git.get_status(pr, x)[0]
       debug("%s: required test %s is %s" % (self.sha, x, s))
       ok = (s == "success")
       if not ok:
         break
     if ok:
-      prMerge(pull)
+      git.merge(pr)
     else:
       info("%s: tests are currently in progress, will auto merge on success" % self.sha)
 
@@ -243,8 +247,8 @@ class Transition(object):
   def evolve(self, state, opener, first_line, extra_allowed_openers):
     allowed_openers = state.approvers.flat()
     allowed_openers.update(extra_allowed_openers)
-    debug("evolve: source: %s, allowed: %s, regexp: %s, final: %s, from: %s" % \
-          (state, allowed_openers, self.regexp, self.final_state, self.from_states))
+    debug("evolve: %s ==> %s, allowed: %s, regexp: %s, from: %s" % \
+          (state.name, self.final_state, allowed_openers, self.regexp, self.from_states))
     if state.name not in self.from_states:
       debug("evolve: from state %s unallowed" % state.name)
       return state
@@ -503,7 +507,7 @@ class PrRPC(object):
           break
 
     info("Final state is %s: executing action" % state)
-    state.action(pull, perms, tests)
+    state.action(self.git, pr, perms, tests)
     return True
 
   @app.route("/", methods=["POST"])
@@ -655,15 +659,6 @@ def load_perms(f_perms, f_groups, f_mapusers, admins):
                              num_approve=1))
 
   return perms,tests,realnames
-
-def getStatus(pull, sha, context):
-  commit = pull.base.repo.get_commit(sha)
-  for s in commit.get_statuses():
-    if s.context == context:
-      return s.state,s.description
-      break  # first (most recent) only
-  debug("Could not get \"%s\" state for %s" % (context, sha))
-  return None,None
 
 if __name__ == "__main__":
 
