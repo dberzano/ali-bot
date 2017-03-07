@@ -407,10 +407,6 @@ class PrRPC(object):
     #debug("GitHub to full names mapping:\n"+json.dumps(usermap, indent=2))
     setattr(Approvers, "usermap", usermap)
 
-    gh_req_left,gh_req_limit,gh_reset = self.git.get_rate_limit()
-    info("GitHub API calls: %d calls left (%d calls allowed) - reset in %d seconds" % \
-         (gh_req_left,gh_req_limit,gh_reset-time()))
-
     for pr in prs:
       if self.must_exit:
         info("Interrupting loop: must exit")
@@ -440,16 +436,9 @@ class PrRPC(object):
       # PR can be removed from list
       if ok:
         unprocessed.remove(pr)
-    if gh_req_left > 0:
-      gh_req_left_2,gh_req_limit_2,gh_reset = self.git.get_rate_limit()
-      info("GitHub API calls: %d calls done, %d calls left (%d calls allowed) - reset in %d seconds" % \
-           (gh_req_left-gh_req_left_2,
-            gh_req_left_2,gh_req_limit_2,
-            gh_reset-time()))
     return unprocessed  # empty set in case of full success
 
   def pull_state_machine(self, pr, perms, tests, bot_user, admins, dryRun):
-
     pull = self.git.get_pull(pr)
     info("")
     info("~~~ processing %s: %s (changed files: %d) ~~~" % (pr, pull.title, pull.changed_files))
