@@ -35,6 +35,8 @@ class MetaGit(object):
         raise MetaGitException("Cannot get pull request %s: %s" % (pr, e))
     pull = namedtuple("MetaPull", ["title", "hash", "changed_files"])
     pull.name            = pr
+    pull.repo            = repo
+    pull.num             = num
     pull.title           = self.gh_pulls[pr].title
     pull.changed_files   = self.gh_pulls[pr].changed_files
     pull.sha             = self.gh_pulls[pr].head.sha
@@ -43,7 +45,32 @@ class MetaGit(object):
     pull.mergeable_state = self.gh_pulls[pr].mergeable_state
     pull.who             = self.gh_pulls[pr].user.login
     pull.when            = self.gh_pulls[pr].head.repo.get_commit(pull.sha).commit.committer.date
+    pull.get_files       = self.gh_pulls[pr].get_files  # TODO
     return pull
+
+  def get_pulls(self, repo):
+    # Returns a set of pull requests for this repository, and caches the objects
+    if not repo in self.gh_repos:
+      try:
+        self.gh_repos[repo] = self.gh.get_repo(repo)
+      except GithubException as e:
+        raise MetaGitException("Cannot get repository %s: %s" % (repo, e))
+    all_pulls = set()
+    try:
+      for p in self.gh_repos[repo].get_pulls():
+        pr = repo + "#" + str(p.number)
+        self.gh_pulls[pr] = p
+        all_pulls.add(pr)
+    except GithubException as e:
+      raise MetaGitException("Cannot get list of pull requests for %s" % repo)
+    return all_pulls
+
+  def get_pull_from_sha(self, sha):
+    # Returns a pull request object from the sha, if cached. None if not found
+    for pr in self.gh_pulls:
+      if self.gh_pulls[pr].head.sha == sha:
+        return self.get_pull(pr, cached=True)
+    return None
 
   def get_statuses(self, pr, contexts):
     # Given a pr and an array of contexts returns a dict of MetaStatus. If status is not found, it
@@ -123,7 +150,7 @@ class MetaGit(object):
       for c in self.gh_pulls[pr].get_issue_comments():
         cn = namedtuple("MetaComment", ["body", "firstline", "who", "when"])
         cn.body  = c.body
-        cn.short = cn.body.split("\n", 1)[0]
+        cn.short = cn.body.split("\n", 1)[0].strip()
         cn.who   = c.user.login
         cn.when  = c.created_at
         yield cn

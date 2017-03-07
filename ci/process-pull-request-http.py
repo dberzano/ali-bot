@@ -354,7 +354,6 @@ class PrRPC(object):
     self.git = MetaGit(backend="GitHub",
                        token=open(expanduser("~/.github-token")).read().strip(),
                        rw=not dryRun)
-    self.pulls_hashes = {}
 
     def set_must_exit():
       self.must_exit = True
@@ -385,18 +384,15 @@ class PrRPC(object):
     return json.dumps(obj)
 
   def add_all_open_prs(self):
-    self.pulls_hashes = {}
     perms,_,_ = load_perms("perms.yml", "groups.yml", "mapusers.yml", admins=args.admins.split(","))
-    for repo_name in perms:
-      self.gh_init_repo(repo_name)
+    for repo in perms:
       try:
-        for p in self.gh_repos[repo_name].get_pulls():
-          fullpr = repo_name + "#" + str(p.number)
-          self.pulls_hashes[fullpr] = p.head.sha
-          debug("Process all: appending %s" % fullpr)
-          self.items.add(fullpr)
-      except GithubException as e:
-        warning("Cannot get pulls for %s: %s" % (repo_name, e))
+        newpr = self.git.get_pulls(repo)
+        self.items.update(newpr)
+        for n in newpr:
+          debug("Process all: appending %s" % n)
+      except MetaGitException as e:
+        warning("Cannot get pulls for %s: %s" % (repo, e))
 
   # Processes a list of pull requests. Takes as input an iterable of pull requests
   # in the form Group/Repo#PrNum and returns a set of processed pull requests.
@@ -521,12 +517,11 @@ class PrRPC(object):
       etype = "pull request opened"
     elif "state" in data and "context" in data and "sha" in data:
       # EVENT: state changed, let's hope we have the hash in cache
-      for k,v in self.pulls_hashes.items():
-        if v == data["sha"]:
-          prid = k.split("#", 1)[1]
-          etype = "state changed"
-          break
-      if not prid:
+      fullpr = self.git.get_pull_from_sha(data["sha"])
+      if fullpr:
+        etype = "state changed"
+        prid = fullpr.num
+      else:
         warning("State changed event was unhandled: could not find %s in cache" % data["sha"])
     elif "issue" in data and data.get("action") == "created" \
       and isinstance(data["issue"].get("pull_request", None), dict) \
@@ -546,8 +541,7 @@ class PrRPC(object):
 
   @app.route("/list")
   def get_list(self, req):
-    return self.j(req, {"queued":list(self.items),
-                        "hashes":self.pulls_hashes})
+    return self.j(req, {"queued":list(self.items)}),
 
   @app.route("/process/<group>/<repo>/<prid>")
   def process(self, req, group, repo, prid):
