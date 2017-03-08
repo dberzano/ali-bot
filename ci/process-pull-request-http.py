@@ -476,7 +476,8 @@ class PrRPC(object):
                   sha=pull.sha,
                   dryRun=args.dryRun,
                   approvers=Approvers(users_override=admins),
-                  haveApproved=[])
+                  haveApproved=[],
+                  haveApproved_p2=[])
 
     for comment in self.git.get_comments(pr):
       if (comment.when-pull.when).total_seconds() < 0:
@@ -530,7 +531,7 @@ class PrRPC(object):
 
   @app.route("/list")
   def get_list(self, req):
-    return self.j(req, {"queued":list(self.items)}),
+    return self.j(req, {"queued":list(self.items)})
 
   @app.route("/process/<group>/<repo>/<prid>")
   def process(self, req, group, repo, prid):
