@@ -224,8 +224,10 @@ class GithubCachedClient(object):
         headers = self.postHeaders(stable_api)
         url = self.makeURL(url, **kwds)
         data = json.dumps(data) if type(data) == dict else data
+        print("post() called: url=%s data=%s" % (url, data))
         response = requests.post(url=url, data=data, headers=headers)
         sc = response.status_code
+        print("post() returned %s -- %s" % (sc, response.text))
         return sc
 
     @trace
