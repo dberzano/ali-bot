@@ -25,6 +25,9 @@ node ("slc7_x86-64-light") {
     sh '''
       pip install twine
       cd alibuild
+      echo ====================
+      cat ${ALIBUILD_PYPI_CONFIG}
+      echo ====================
       mv ${ALIBUILD_PYPI_CONFIG}  ~/.pypirc
       twine upload dist/*
       rm -f ~/.pypirc
