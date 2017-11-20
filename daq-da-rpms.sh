@@ -3,7 +3,7 @@ set -o pipefail
 
 # Default values if script is launched outside Jenkins
 ALIBUILD_REPO=${ALIBUILD_REPO:-alisw/alibuild:master}
-ALIDIST_REPO=${ALIDIST_REPO:-alisw/alidist:master}
+ALIDIST_REPO=${ALIDIST_REPO:-dberzano/alidist:disable-alien-daq}
 ALIROOT_VERSION=${ALIROOT_VERSION:-master}
 ARCHITECTURE=${ARCHITECTURE:-slc6_x86-64}
 
@@ -29,6 +29,7 @@ protect=1
 gpgcheck=0
 EoF
 
+rm -rf alibuild alidist
 git clone -b $ALIBUILD_BRANCH https://github.com/$ALIBUILD_REPO alibuild && ( cd alibuild && git log --oneline -1 )
 git clone -b $ALIDIST_BRANCH https://github.com/$ALIDIST_REPO alidist && ( cd alidist && git log --oneline -1 )
 
@@ -40,9 +41,6 @@ yum install --disablerepo=rpmforge                                             \
             -y BWidget MySQL-shared MySQL-client MySQL-devel dim smi tcl-devel \
                tk-devel libcurl-devel libxml2-devel pciutils-devel mysqltcl    \
                xinetd ksh tcsh pigz MySQL-server date amore ACT daqDA-lib
-
-echo all ok
-exit 0
 
 #yum clean all
 #rm -fv /var/lib/rpm/__db*
@@ -59,6 +57,8 @@ MIRROR=/build/mirror
 WORKAREA=/build/workarea/sw/$BUILD_DATE
 WORKAREA_INDEX=0
 
+mkdir -p $WORKAREA
+
 CURRENT_SLAVE=unknown
 while [[ "$CURRENT_SLAVE" != '' ]]; do
   WORKAREA_INDEX=$((WORKAREA_INDEX+1))
@@ -74,9 +74,12 @@ alibuild/aliBuild --reference-sources $MIRROR          \
                   --work-dir $WORKAREA/$WORKAREA_INDEX \
                   --architecture $ARCHITECTURE         \
                   --jobs ${JOBS:-8}                    \
-                  --remote-store $REMOTE_STORE::rw     \
                   --defaults $DEFAULTS                 \
-                  build AliRoot || BUILDERR=$?
+                  build ROOT || BUILDERR=$?
+                  #--remote-store $REMOTE_STORE::rw     \
+
+echo all ok
+exit 0
 
 rm -f $WORKAREA/$WORKAREA_INDEX/current_slave
 [[ "$BUILDERR" != '' ]] && exit $BUILDERR
