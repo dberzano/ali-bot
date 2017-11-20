@@ -78,7 +78,8 @@ alibuild/aliBuild --reference-sources $MIRROR          \
                   build ROOT || BUILDERR=$?
                   #--remote-store $REMOTE_STORE::rw     \
 
-echo all ok
+echo dropping to a shell
+bash
 exit 0
 
 rm -f $WORKAREA/$WORKAREA_INDEX/current_slave
