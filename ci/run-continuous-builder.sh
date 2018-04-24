@@ -20,7 +20,7 @@ PROG="$PROGDIR/$(basename "$0")"
 CONF="$PROGDIR/conf/$1.sh"
 [[ -r "$CONF" ]] || { echo "Cannot load profile \"$1\"! Valid options: $(ls "$(dirname "$0")"/conf | sed -e 's/\.sh$//' | xargs echo)"; exit 2; }
 source "$CONF"
-source ~/.continuous-builder || true
+[[ -r ~/.continuous-builder ]] && source ~/.continuous-builder
 ERR=0
 for V in GITHUB_TOKEN GITLAB_USER GITLAB_PASS PR_REPO PACKAGE CHECK_NAME PR_BRANCH ALIBUILD_DEFAULTS INFLUXDB_WRITE_URL; do
   [[ $(eval echo \$$V) ]] || { echo "Required variable $V not defined!"; ERR=1; continue; }
