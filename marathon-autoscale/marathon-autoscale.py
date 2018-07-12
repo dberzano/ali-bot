@@ -9,7 +9,7 @@ import os
 def sync():
   conf = {}
   try:
-    conf = yaml.safe_load(get(os.environ["MARATHON_AUTOSCALE_CONF_URL"]).text)
+    conf = yaml.safe_load(get(os.environ["MARATHON_AUTOSCALE_CONF_URL"], headers={"Cache-Control": "no-cache"}).text)
     marathon_url = conf["marathon_url"]
   except Exception as e:
     print("Error fetching configuration: %s" % e)
