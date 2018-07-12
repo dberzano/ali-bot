@@ -2,4 +2,4 @@
 marathon_url: http://leader.mesos:8080
 apps:
   to-be-autoscaled:
-    instances: 2
+    instances: 7
